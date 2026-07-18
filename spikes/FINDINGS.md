@@ -106,6 +106,32 @@ the exact word the user wants doesn't survive as one token. Fixes:
 - Auto "merge adjacent OOV tokens" heuristics are unreliable (幡 is a valid word) —
   don't try to be clever here; let the user merge.
 
+### Furniture detection verified on the real frames (Phase 3)
+
+`spikes/pipeline_spike.py` runs the **production** modules (`ocr.py` + `furniture.py`)
+over the real screenshots. Two scenarios:
+
+**1. Same frame twice (a static screen):** 73 OCR lines → 73 kept on snapshot 1,
+**0 kept / 73 suppressed** on snapshot 2. A motionless screen goes completely silent,
+exactly as intended.
+
+**2. Two different real frames:** snapshot 2 had 30 lines, **8 suppressed — and all 8
+were genuine cross-page chrome**, with zero false positives on content:
+
+```
+✗ 抖音精选电脑版-抖音旗下优质 @ (89,17)   browser tab title
+✗ Incognito (2)              @ (1755,70)  browser chrome
+✗ 89°F · Partly sunny · 4:00 PM · 7/18/2026 · Search · ENG   the Windows taskbar
+```
+
+It correctly did **not** suppress the URL (different text — a modal_id was appended),
+the search box content 凡人歌, or any video content. The Douyin nav bar wasn't
+suppressed either, because the second frame is a video modal that doesn't show it —
+it had only been seen once. All correct.
+
+Combined with the leak invariant (`threshold - 1 = 1` observation vs the `N = 2`
+promotion gate), chrome is structurally incapable of reaching a card.
+
 **Homepage is the worst case, not the real case.** Frame 1 (browse feed, dozens of
 thumbnails) is maximally noisy; frame 2 (a playing video: one caption + one hardsub)
 was 90% content and clean. Capture sessions happen on a playing video, where region
