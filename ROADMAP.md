@@ -205,8 +205,12 @@ chrome on the second tick of a static screen).
   tick that pushed it). Every dependency is injectable, so the loop is tested headless.
   A failing tick is logged and survived, never fatal to the sitting. `run()` waits on
   an Event so stopping is immediate rather than waiting out the interval.
-- ☑ `__main__.py` — `python -m blipfeed` (also `--manual`, `--region`, `--once`,
+- ☑ `__main__.py` — `python -m blipfeed` (also `--manual`, `--no-picker`, `--once`,
   `--status`). Prints a per-tick readout when you're watching; draws nothing on screen.
+- ☑ **The region picker opens on every start**, pre-loaded with the saved region drawn
+  dashed. A saved region you can't see is a region you don't trust — you'd have no idea
+  where mining points, or that the window moved since last time. Esc keeps it and
+  proceeds; `--no-picker` skips the step for scripted runs.
 - ☑ `ui/pick.py` — MANUAL chip picker over the frozen frame, with **adjacent-chip
   merge** that fixes OOV slang (万魂 + 幡 → 万魂幡) and teaches it to the segmenter
   permanently via `segment.add_user_word`.

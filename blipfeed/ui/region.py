@@ -67,7 +67,8 @@ class _Picker:
                 fill="#9aa4b2", font=("Segoe UI", 11))
 
         hint = ("Drag to select the capture region   ·   saved automatically   ·   "
-                "Esc to keep the current one")
+                + ("Esc to keep the current one" if current is not None
+                   else "Esc to skip"))
         self.hint = self.canvas.create_text(
             win.winfo_screenwidth() // 2, 40, text=hint,
             fill="white", font=("Segoe UI", 16))

@@ -2,9 +2,12 @@
 
     python -m blipfeed                  # AUTO: headless capture on a timer
     python -m blipfeed --manual         # MANUAL: hotkey grabs a frame, you pick chips
-    python -m blipfeed --region         # redraw the capture region first
+    python -m blipfeed --no-picker      # skip the region confirmation (scripted runs)
     python -m blipfeed --once           # a single tick, then exit (diagnostics)
     python -m blipfeed --status         # what's in the store; capture nothing
+
+The region picker opens on **every** start, showing the saved region so you can see
+where mining will point and adjust it. Esc keeps it and proceeds.
 
 AUTO mode draws nothing and says nothing on screen (Decisions #6) — the console
 readout is for when you're watching, and the hotkeys are how you drive it while a game
@@ -43,21 +46,34 @@ def _fmt_tick(result):
     return line
 
 
-def _resolve_region(cfg, capturer, want_picker):
-    """The region to capture, picking one if asked or if none is saved."""
-    region = cfg.region()
-    if want_picker or region is None:
-        if region is None and not want_picker:
-            print("No capture region saved yet — pick one.")
-        from .ui.region import pick_region
-        picked = pick_region(current=region)
-        if picked is not None:
-            region = picked
-            cfg.set_region(region).save()
-            print(f"region saved: {region.label()}")
-        elif region is None:
-            region = capturer.bottom_third(cfg.monitor)
-            print(f"cancelled — using the bottom third: {region.label()}")
+def _resolve_region(cfg, capturer, argv):
+    """The region to capture — confirmed visually every time mining starts.
+
+    The picker **always opens**, pre-loaded with the saved region drawn dashed. A
+    saved region you can't see is a region you don't trust: you'd have no idea where
+    mining was pointed, or that the window you're capturing has since moved. So every
+    start is a chance to look and adjust.
+
+    Esc keeps the current region and proceeds. `--no-picker` skips the step entirely
+    for scripted runs.
+    """
+    saved = cfg.region()
+    if "--no-picker" in argv:
+        region = saved or capturer.bottom_third(cfg.monitor)
+        print(f"region (picker skipped): {region.label()}")
+        return region
+
+    from .ui.region import pick_region
+    picked = pick_region(current=saved)
+    if picked is not None:
+        cfg.set_region(picked).save()
+        print(f"region saved: {picked.label()}")
+        return picked
+    if saved is not None:
+        print(f"keeping the current region: {saved.label()}")
+        return saved
+    region = capturer.bottom_third(cfg.monitor)
+    print(f"no region chosen — using the bottom third: {region.label()}")
     return region
 
 
@@ -93,7 +109,7 @@ def main(argv=None):
         return _show_status(conn, cfg)
 
     capturer = capture.Capturer()
-    region = _resolve_region(cfg, capturer, want_picker="--region" in argv)
+    region = _resolve_region(cfg, capturer, argv)
 
     sess = session_mod.CaptureSession(conn, cfg, region, capturer=capturer,
                                       label=f"session {region.label()}")
