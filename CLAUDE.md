@@ -247,6 +247,14 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
 
 - **Segmentation is the silent failure mode.** Wrong splits corrupt frequency with
   no error. Unit-test `segment.py` against known sentences.
+- **OOV slang fragments — the words you most want are the ones jieba splits.**
+  Proven on the real frames: 万魂幡 → 万魂 / 幡 (the slang term isn't in jieba's dict).
+  So the exact target doesn't survive as one token. Don't try to auto-merge
+  cleverly (幡 alone is a valid word — heuristics will overreach). The fixes are
+  **manual-mode chip merge** (user fuses 万魂 + 幡 → 万魂幡; this is why manual mode is
+  the real *slang-mining* path) and a **growable jieba user dictionary** (add it once,
+  it stays merged). This is the same class of word as the CEDICT-misses — high value,
+  poorly served by off-the-shelf tools, so keep the human in the loop for them.
 - **OCR confidence must reach promotion.** A low-confidence line that happens to
   segment into a real CEDICT word is a trap; carry `ocr_conf_max` on the term and
   gate on it, don't card on text alone.
@@ -271,6 +279,13 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
   content. (The linguistic particle filter for 的/了/是 is separate — that's grammar,
   not chrome.) A "static for ≥ M snapshots" threshold keeps a briefly-held title from
   being mistaken for furniture.
+
+  **`dict_ok` is NOT a chrome filter — furniture detection is the only one.** Proven
+  on the real frames: a Douyin homepage OCR'd to 114 tokens with an 83–90% CEDICT hit
+  rate, yet the top of the ranking was pure chrome (抖音×7, 精选×5, 三角洲×3) — because
+  *chrome is made of real dictionary words* (游戏/音乐/影视/全部 all hit CEDICT). The
+  dictionary gate filters OCR *garbage*; it does nothing against real-word chrome.
+  Only static-position detection removes it.
 - **The text you want isn't always in the same place.** On these frames it's the
   burned-in hardsub (bottom-center: 万魂幡？) on one and the caption (bottom-left:
   第4集：当中年人遇到…) on the other. Region is drawn per source; a generous

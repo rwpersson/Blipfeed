@@ -90,7 +90,10 @@ The heart. Turns recognized text into ranked, gated cards.
 
 - ☐ `segment.py` — jieba segmentation + token filter (drop punctuation, latin,
   digits, single-char particles via a stoplist). **Load-bearing and unit-tested**
-  against known sentences — bad splits corrupt every count silently.
+  against known sentences — bad splits corrupt every count silently. Support a
+  **growable jieba user dictionary** (`jieba.load_userdict`) so a slang term added
+  once (万魂幡) stays merged thereafter — the real-frame test showed OOV slang is the
+  thing jieba fragments (see spikes/FINDINGS.md).
 - ☐ `dict.py` — CC-CEDICT load + lookup: `meaning`, `dict_ok`, optional `hsk_level`.
 - ☐ `lang.py` — reading/tones via pypinyin (ported from Blip; the only Chinese-only
   logic besides segment/dict).
@@ -153,7 +156,9 @@ The always-there surface while immersing. Small and unobtrusive.
 - ☐ `ui/pick.py` — **MANUAL-mode chip picker**: freeze the snapshot, overlay every
   detected word as a clickable chip (furniture-filtered so it's not cluttered), user
   taps the ones to keep → they observe into the store. The precision path for dense
-  frames (CLAUDE.md Decisions #2b).
+  frames (CLAUDE.md Decisions #2b). **Adjacent-chip merge** (万魂 + 幡 → 万魂幡) fixes
+  the OOV-slang fragmentation the real-frame test found, and can feed the jieba user
+  dictionary so the merge sticks next time.
 - ☐ Session boundaries — a session is a sitting (a video, a scroll); review "words
   from *that* video."
 - ☐ Pause/resume; auto-pause when the capture source window isn't foreground

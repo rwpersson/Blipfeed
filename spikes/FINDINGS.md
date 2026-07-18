@@ -63,3 +63,51 @@ over-merge (今天天气 should be 今天/天气) and a split corrupted by an up
 error (看部). Both were caught by the dict gate, so they didn't reach a card. If real
 frames show more of this, pkuseg is the Phase 7 fallback — but jieba looks good
 enough to build on.
+
+---
+
+## Real-frame test — two full-screen Douyin captures (the decisive run)
+
+Ran the spike on two *un-cropped* real screenshots (a Douyin homepage feed and a
+playing video). This is the run that settled the architecture.
+
+**OCR works on the wild.** RapidOCR read the stylized hardsub **万魂幡？** correctly
+(all three chars), plus 婚姻危机 / 娶妻 / 凡人歌 from the caption, at conf 0.78–0.82.
+Full-screen latency 4.6s (dense homepage) / 2.7s (video) — a cropped region will be a
+fraction of that. Real stylized hardsubs are readable. ✅
+
+**Furniture detection is proven essential — and dict_ok can't substitute for it.**
+The homepage produced **114 tokens, almost all UI/other-video titles**, and the
+frequency ranking was pure chrome:
+
+```
+7 抖音   5 精选   4 日   3 月   3 三角洲   3 行动   3 歌   ...   2 万魂   2 幡
+```
+
+The word actually worth learning (万魂幡) is buried at count 2 under chrome at
+counts 3–7. Critically, the dict hit rate was **83–90%** — high and *useless as a
+quality signal*, because **chrome is made of real dictionary words** (游戏/音乐/影视/
+全部 all hit CEDICT). So:
+
+- `dict_ok` filters OCR *garbage*, but is **powerless against real-word chrome**.
+- Only **static-position furniture detection** removes chrome. 抖音×7 / 精选×5 —
+  identical text in identical positions across both frames — is exactly its signal.
+- Chrome must be stripped **before** counting, or the frequency premise inverts.
+
+This empirically confirms CLAUDE.md Decisions #2b and the furniture gotcha.
+
+**New finding — OOV slang fragments in segmentation.** jieba split **万魂幡 → 万魂 /
+幡** (the slang term isn't in jieba's dict; 幡 alone *is* in CEDICT, 万魂 isn't). So
+the exact word the user wants doesn't survive as one token. Fixes:
+
+- **Manual-mode merge** — let the user fuse adjacent chips (万魂 + 幡 → 万魂幡). The
+  reliable path, and a strong reason manual mode is the *slang-mining* mode.
+- A jieba **user dictionary** the user can grow (add 万魂幡 once, it stays merged).
+- Auto "merge adjacent OOV tokens" heuristics are unreliable (幡 is a valid word) —
+  don't try to be clever here; let the user merge.
+
+**Homepage is the worst case, not the real case.** Frame 1 (browse feed, dozens of
+thumbnails) is maximally noisy; frame 2 (a playing video: one caption + one hardsub)
+was 90% content and clean. Capture sessions happen on a playing video, where region
++ furniture + the subtitle genuinely recurring over time all work in our favor.
+Region targeting stays the cheap first cut; furniture handles the rest.
