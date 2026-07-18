@@ -13,8 +13,20 @@ back scaled and the capture lands in the wrong place (Blip's documented trap).
 import sys
 import tkinter as tk
 
-from .. import capture
-from ..logging_setup import get
+# Run-as-a-script guard. Relative imports need a package context, which doesn't exist
+# when this file is executed directly (`python blipfeed/ui/region.py`, or an IDE's Run
+# button). Establish one *before* the relative imports below, so both entry styles
+# work. Any module here with a __main__ needs this.
+if __package__ in (None, ""):
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    import blipfeed.ui  # noqa: F401  — make the parent package real
+
+    __package__ = "blipfeed.ui"
+
+from .. import capture  # noqa: E402
+from ..logging_setup import get  # noqa: E402
 
 log = get("ui.region")
 

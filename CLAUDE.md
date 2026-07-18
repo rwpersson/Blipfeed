@@ -277,6 +277,27 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
    visible and one click to stop. This is both an ethics requirement and what makes
    the tool trustworthy. Do not add any network egress of captured content.
 
+## Conventions
+
+- **Every module with a `__main__` needs the run-as-a-script guard.** Relative
+  imports (`from .. import capture`) fail with *"attempted relative import with no
+  known parent package"* when the file is executed directly — which is exactly what an
+  IDE's Run button does. Requiring `python -m blipfeed.ui.region` is a footgun, so
+  establish a package context *before* the relative imports (see `ui/region.py`):
+
+  ```python
+  if __package__ in (None, ""):
+      from pathlib import Path
+      sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+      import blipfeed.ui  # noqa: F401
+      __package__ = "blipfeed.ui"
+  ```
+
+  (`parents[2]` from `blipfeed/ui/x.py`; use `parents[1]` from `blipfeed/x.py`.)
+  Verify without opening a window: `runpy.run_path(file, run_name="smoketest")`
+  executes the body — and the guard — while skipping `main()`.
+- Log, don't swallow: no bare `except: pass` — use `log.exception(...)` (Blip's rule).
+
 ## Anticipated gotchas (fill in as they cost real debugging)
 
 - **Segmentation is the silent failure mode.** Wrong splits corrupt frequency with
