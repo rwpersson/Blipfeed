@@ -7,6 +7,9 @@ data/captures/
 data/cedict/cedict_ts.u8
 logs/
 
+# Real capture fixtures contain the user's actual desktop — keep them local only
+spikes/frames/real/
+
 # OCR / model caches
 .paddleocr/
 *.onnx
