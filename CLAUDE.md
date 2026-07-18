@@ -67,8 +67,17 @@ opposite: unbounded, append-only, needs ranking/filter/dedup queries. **SQLite
 | `sessions` | immersion sitting (a video, a scroll session) | `id, started, ended, source_label, language` |
 | `snapshots` | capture tick | `id, session_id, ts, source, region, image_hash, raw_text, ocr_engine` |
 | `observations` | a single sighting of a term | `id, term, snapshot_id, session_id, context_sentence, confidence, bbox, ts` |
-| `terms` | a distinct word (the queryable state) | `term (PK), language, reading, tones, meaning, note, cat, hsk_level, dict_ok, ocr_conf_max, count, status, first_seen, last_seen, card_deck, card_id, enriched_at` |
+| `terms` | a distinct word (the queryable state) | `id (PK) + UNIQUE(language, term), alt, reading, tones, meaning, note, cat, hsk_level, dict_ok, ocr_conf_max, count, status, first_seen, last_seen, enriched_at, card_deck, card_id` |
 
+- `terms` has a **surrogate `id`** (not `term` as PK) + `UNIQUE(language, term)`:
+  observations reference a compact int, and (language, term) uniqueness is the
+  multi-language seam (Decisions #4) with no later migration.
+- **Both script forms on the card.** `term` holds the canonical (simplified) form —
+  the frequency dedup key — and `alt` holds the other (traditional), which maps
+  straight onto Blip's `alt` field so a card shows both. CC-CEDICT carries both forms
+  on every entry, so a dictionary hit fills `alt` for free. *Normalizing* the two so
+  學習 and 学习 share one row (dedup) is **deferred** — v1 stores the surface form as
+  OCR'd; the `alt` column and both-forms-on-card work regardless.
 - `terms.count` is **denormalized** (bumped on every observation insert) so ranking
   by frequency is O(1), never `COUNT(*)` over `observations`.
 - `observations` is the **source of truth** — append-only, indexed on `(term)` and

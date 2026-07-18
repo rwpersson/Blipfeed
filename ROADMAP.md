@@ -47,21 +47,28 @@ scripts are fine here.
 - ☐ Decision checkpoint: if any of the three is worse than hoped, adjust Decisions in
   CLAUDE.md *before* Phase 2, not after.
 
-## Phase 2 — The store ★ ☐
+## Phase 2 — The store ☑ DONE ★
 
 The data foundation the whole app queries. Get the schema right before anything writes
 to it.
 
-- ☐ `store.py` — SQLite schema: `sessions`, `snapshots`, `observations`, `terms`
-  (see CLAUDE.md data model). Schema version in a `meta` table for migrations.
-- ☐ `record_observation(term, snapshot, context, confidence, …)` — upserts the term,
-  bumps the **denormalized `terms.count`**, appends the observation. One transaction.
-- ☐ Term state transitions: `new → queued → carded | known | ignored`, with
-  `card_deck`/`card_id` set on carding. **Card-once enforced here**, not in the UI.
-- ☐ Indices: `observations(term)`, `observations(session_id, ts)`, `terms(status,
-  count)`. Ranking the queue must stay instant as rows grow.
-- ☐ Tests: insert observations, assert counts/dedup/state transitions. This table is
-  the source of truth — test it like it.
+- ☑ `store.py` — SQLite schema: `sessions`, `snapshots`, `observations`, `terms` +
+  `meta` (schema version, migrations). WAL + foreign_keys on (capture & review may be
+  separate processes). **terms use a surrogate `id`** + UNIQUE(language, term), and an
+  **`alt` column** carries the traditional form so a card shows both scripts.
+- ☑ `observe(term, session, snapshot, context, confidence, …)` — upserts the term,
+  appends the observation, bumps the **denormalized `count` / `ocr_conf_max` /
+  `last_seen`**. Create-fields apply only on first sight (never clobber user edits).
+- ☑ Term state: `new → queued → carded | known | ignored`. **Card-once AND
+  cardable⇔has-meaning both enforced in `mark_carded`**, not the UI. `set_meaning`
+  moves a term from *needs-def* to *ready*; `seed_term` imports known words.
+- ☑ Buckets as views: `bucket('needs_def')` / `bucket('ready')`, frequency-ranked,
+  plus a partial index for the loud needs-def query. `contexts_for` mines best
+  distinct sentences. `recount` rebuilds the caches.
+- ☑ Indices: `observations(term_id)`, `observations(session_id, ts)`,
+  `terms(status, count DESC)`, partial `terms` index for needs-def.
+- ☑ Tests: **15 passing** — counts, per-language uniqueness, both-forms, buckets,
+  card-once, cardable-invariant, known-seeding, context mining, recount.
 
 ## Phase 3 — Capture ☐
 
