@@ -127,8 +127,12 @@ def pick_region(master=None):
     return picker.result
 
 
-def main():
+def main(argv=None):
+    """Pick a region. `--save` writes it to the config so capture can use it."""
     sys.stdout.reconfigure(encoding="utf-8")
+    argv = sys.argv[1:] if argv is None else argv
+    save = "--save" in argv
+
     region = pick_region()
     if region is None:
         print("cancelled")
@@ -136,6 +140,14 @@ def main():
     print(f"region: {region.label()}")
     print(f"  left={region.left} top={region.top} "
           f"width={region.width} height={region.height}")
+
+    if save:
+        from .. import config as config_mod
+        cfg = config_mod.load()
+        path = cfg.set_region(region).save()
+        print(f"saved to {path}")
+    else:
+        print("(not saved — pass --save to persist it as the capture region)")
     return 0
 
 

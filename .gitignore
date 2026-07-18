@@ -34,3 +34,6 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local user config (region, knobs) — machine-specific
+config.json
