@@ -182,16 +182,28 @@ def last_snapshot_hash(conn, session_id, source=None):
 def upsert_term(conn, term, language="zh-CN", fields=None, ts=None):
     """Ensure a term row exists. Returns (term_id, created).
 
-    Fields are applied ONLY on creation — a later observation never overwrites a
-    term the user may have edited. Counters are NOT touched here (see observe()).
+    The term is canonicalized (trad→simp) so 學習 and 学习 dedup to one row; the
+    other script rides along as `alt`. Fields are applied ONLY on creation — a later
+    observation never overwrites a term the user may have edited — except `alt` is
+    backfilled when still NULL (safe, and captures whichever script we see first).
+    Counters are NOT touched here (see observe()).
     """
-    row = conn.execute("SELECT id FROM terms WHERE language=? AND term=?",
+    from . import hanzi
+    term, alt = hanzi.canonicalize(term, language)
+    fields = dict(fields or {})
+    if alt and not fields.get("alt"):
+        fields["alt"] = alt
+
+    row = conn.execute("SELECT id, alt FROM terms WHERE language=? AND term=?",
                        (language, term)).fetchone()
     if row:
-        return row[0], False
+        if alt and row["alt"] is None:
+            conn.execute("UPDATE terms SET alt=? WHERE id=? AND alt IS NULL",
+                         (alt, row["id"]))
+        return row["id"], False
     ts = ts or _now()
     cols = {"term": term, "language": language, "first_seen": ts, "last_seen": ts}
-    for k, v in (fields or {}).items():
+    for k, v in fields.items():
         if k in _CREATE_FIELDS and v is not None:
             cols[k] = v
     keys = list(cols)
@@ -245,6 +257,9 @@ def get_term(conn, term_id):
 
 
 def find_term(conn, term, language="zh-CN"):
+    """Look up by either script — the query term is canonicalized too."""
+    from . import hanzi
+    term, _ = hanzi.canonicalize(term, language)
     return conn.execute("SELECT * FROM terms WHERE language=? AND term=?",
                         (language, term)).fetchone()
 

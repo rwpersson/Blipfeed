@@ -55,6 +55,21 @@ def test_unique_per_language(conn):
     assert store.observe(conn, term="中文", language="zh-CN") == t_zh
 
 
+def test_trad_simp_dedup_for_frequency(conn, monkeypatch):
+    # inject a small trad→simp map so the test doesn't need the CC-CEDICT file
+    from blipfeed import hanzi
+    monkeypatch.setattr(hanzi, "_MAP", {"學": "学", "習": "习"})
+
+    t1 = store.observe(conn, term="学习", confidence=0.6)   # simplified
+    t2 = store.observe(conn, term="學習", confidence=0.9)   # traditional -> same term
+    assert t1 == t2                                         # one row, not two
+    t = store.get_term(conn, t1)
+    assert t["term"] == "学习"        # canonical (simplified) is the key
+    assert t["count"] == 2            # frequency combined across scripts
+    assert t["alt"] == "學習"         # traditional captured for the card
+    assert store.find_term(conn, "學習")["id"] == t1        # lookup by either script
+
+
 def test_both_script_forms_on_card(conn):
     # CEDICT hands us both forms; term = simplified (dedup key), alt = traditional.
     tid = store.observe(conn, term="学习",

@@ -72,12 +72,15 @@ opposite: unbounded, append-only, needs ranking/filter/dedup queries. **SQLite
 - `terms` has a **surrogate `id`** (not `term` as PK) + `UNIQUE(language, term)`:
   observations reference a compact int, and (language, term) uniqueness is the
   multi-language seam (Decisions #4) with no later migration.
-- **Both script forms on the card.** `term` holds the canonical (simplified) form —
-  the frequency dedup key — and `alt` holds the other (traditional), which maps
-  straight onto Blip's `alt` field so a card shows both. CC-CEDICT carries both forms
-  on every entry, so a dictionary hit fills `alt` for free. *Normalizing* the two so
-  學習 and 学习 share one row (dedup) is **deferred** — v1 stores the surface form as
-  OCR'd; the `alt` column and both-forms-on-card work regardless.
+- **Both script forms, and trad→simp dedup — DONE (`hanzi.py`).** `term` holds the
+  canonical (simplified) form — the frequency dedup key — and `alt` holds the other
+  (traditional), mapped straight onto Blip's `alt` field so a card shows both. The
+  store canonicalizes on the way in (`upsert_term` → `hanzi.canonicalize`), so 學習
+  and 学习 share one row and their counts combine; whichever script is seen first is
+  backfilled as `alt`. The trad→simp map is derived from **CC-CEDICT itself** (zip
+  each entry's two forms) — no OpenCC dependency — and degrades to identity if the
+  dictionary is absent. CEDICT lookup at enrichment (Phase 4) fills the authoritative
+  traditional form for a word first seen simplified.
 - `terms.count` is **denormalized** (bumped on every observation insert) so ranking
   by frequency is O(1), never `COUNT(*)` over `observations`.
 - `observations` is the **source of truth** — append-only, indexed on `(term)` and
@@ -196,6 +199,7 @@ blipfeed/
   segment.py        jieba segmentation + token filtering (LOAD-BEARING, tested)
   dict.py           CC-CEDICT load + lookup (meaning, dict_ok, hsk optional)
   lang.py           reading/tones via pypinyin (ported from Blip, Chinese-only bit)
+  hanzi.py          trad↔simp: canonicalize for dedup, CEDICT-derived map (tested)
   store.py          SQLite: schema, upsert observation, term state (tested)
   frequency.py      ingestion + promotion policy (N, K, eligibility) — pure, tested
   blip_link.py      locate Blip's user dir; write/merge the immersion deck
