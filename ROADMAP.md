@@ -86,7 +86,10 @@ Get pixels into text, cheaply and only when they change.
   unaware process would see 1536×960 on this 125%-scaled machine.
 - ☑ `ui/region.py` — **visual drag-select region picker**, an ordinary focus-taking
   fullscreen window spanning the virtual desktop, with a live size readout and Esc to
-  cancel. `python -m blipfeed.ui.region` runs it standalone.
+  cancel. Runs standalone (direct path, Run button, or `-m`). **Saves automatically** —
+  picking a region *is* choosing it, so no flag is required; `--no-save` is the
+  escape hatch. Re-run any time to **redraw**: the new region replaces the old, and
+  the current one is drawn dashed while you drag so you can see what you're replacing.
 - ☑ **Change-detection** — `frame_hash` (exact) + `ChangeDetector`: identical frame ⇒
   skip OCR. Kills paused-screen inflation. Note it only saves *OCR cost*; a subtitle
   held while video moves behind it needs the text-level dedup that `furniture.py`
@@ -186,6 +189,10 @@ focus-taking window.
   Needs an .ico (shared with packaging, Phase 8).
 - ☐ **Auto mode stays silent** — no toasts when a word is carded; that's the
   interruption we're avoiding. Words accumulate, the user reviews after.
+- ☐ **"Redraw region" must be reachable at any time** — a panel button *and* a global
+  hotkey, not just the CLI. Changing what you're capturing is a normal thing to do
+  mid-session (you switch video, resize the window), so it can't require a terminal.
+  `ui/region.pick_region(current=…)` already handles the redraw; this is just wiring.
 - ☐ `ui/panel.py` — start/stop capture, pick region, name the session, **AUTO/MANUAL
   mode toggle**, live counters (snapshots taken, words seen, cards made). **Capture
   state always visible, one click to stop** (CLAUDE.md privacy decision #7).

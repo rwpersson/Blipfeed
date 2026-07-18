@@ -44,7 +44,7 @@ def _virtual_desktop():
 
 
 class _Picker:
-    def __init__(self, win, origin):
+    def __init__(self, win, origin, current=None):
         self.win = win
         self.ox, self.oy = origin          # virtual-desktop origin, for screen coords
         self.start = None
@@ -53,9 +53,23 @@ class _Picker:
         self.canvas = tk.Canvas(win, cursor="cross", bg="black",
                                 highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
+
+        # Show the region already in use, so "redraw" is a visible replacement
+        # rather than a guess about what's currently set.
+        if current is not None:
+            cx, cy = current.left - self.ox, current.top - self.oy
+            self.canvas.create_rectangle(
+                cx, cy, cx + current.width, cy + current.height,
+                outline="#9aa4b2", width=2, dash=(6, 4))
+            self.canvas.create_text(
+                cx + current.width // 2, max(cy - 14, 10),
+                text=f"current: {current.label()}",
+                fill="#9aa4b2", font=("Segoe UI", 11))
+
+        hint = ("Drag to select the capture region   ·   saved automatically   ·   "
+                "Esc to keep the current one")
         self.hint = self.canvas.create_text(
-            win.winfo_screenwidth() // 2, 40,
-            text="Drag to select the capture region   ·   Esc to cancel",
+            win.winfo_screenwidth() // 2, 40, text=hint,
             fill="white", font=("Segoe UI", 16))
         self.size_label = None
         self.canvas.bind("<ButtonPress-1>", self.on_press)
@@ -101,10 +115,12 @@ class _Picker:
         self.win.destroy()
 
 
-def pick_region(master=None):
+def pick_region(master=None, current=None):
     """Show the picker; return a `capture.Region`, or None if cancelled.
 
-    Pass `master` when the caller already owns a Tk root (one root per process).
+    `current` (the region already in use) is drawn as a reference so redrawing is a
+    visible replacement. Pass `master` when the caller already owns a Tk root (one
+    root per process).
     """
     capture.set_dpi_aware()
     left, top, width, height = _virtual_desktop()
@@ -117,7 +133,7 @@ def pick_region(master=None):
     win.attributes("-topmost", True)
     win.attributes("-alpha", 0.30)
 
-    picker = _Picker(win, (left, top))
+    picker = _Picker(win, (left, top), current)
     win.focus_force()                    # deliberate window: taking focus is correct
     if owns_root:
         win.mainloop()
@@ -128,26 +144,36 @@ def pick_region(master=None):
 
 
 def main(argv=None):
-    """Pick a region. `--save` writes it to the config so capture can use it."""
+    """Pick a capture region and save it.
+
+    Saving is the default: picking a region *is* the act of choosing it, so making
+    the user remember a flag would be backwards. Re-run any time to redraw — the new
+    region simply replaces the old one, and the old one is shown while you drag.
+    `--no-save` is the escape hatch for reading coordinates without touching config.
+    """
     sys.stdout.reconfigure(encoding="utf-8")
     argv = sys.argv[1:] if argv is None else argv
-    save = "--save" in argv
+    from .. import config as config_mod
 
-    region = pick_region()
+    cfg = config_mod.load()
+    current = cfg.region()
+    if current:
+        print(f"current region: {current.label()}")
+
+    region = pick_region(current=current)
     if region is None:
-        print("cancelled")
+        print("cancelled — keeping the current region" if current else "cancelled")
         return 1
+
     print(f"region: {region.label()}")
     print(f"  left={region.left} top={region.top} "
           f"width={region.width} height={region.height}")
 
-    if save:
-        from .. import config as config_mod
-        cfg = config_mod.load()
-        path = cfg.set_region(region).save()
-        print(f"saved to {path}")
-    else:
-        print("(not saved — pass --save to persist it as the capture region)")
+    if "--no-save" in argv:
+        print("(not saved — --no-save)")
+        return 0
+    path = cfg.set_region(region).save()
+    print(f"saved to {path}")
     return 0
 
 
