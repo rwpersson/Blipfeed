@@ -1,0 +1,25 @@
+# Blipfeed dependencies.
+#
+# The OCR stack is heavy and native — this is the accepted cost of a separate app
+# (see CLAUDE.md Decisions #1/#3). Versions are floors; pin hard once the spike
+# (ROADMAP Phase 1) confirms a working combination on this Python.
+#
+# NOTE: PaddlePaddle wheels lag new Python releases. If there is no wheel for the
+# installed interpreter, the spike falls back to a lighter engine and this gets
+# revisited — do not assume paddle installs clean on 3.14+.
+
+# --- OCR ---
+paddleocr>=2.7          # PP-OCR pipeline (detection + recognition)
+paddlepaddle>=2.6       # inference runtime for PaddleOCR (CPU build)
+
+# --- segmentation + reading (Chinese) ---
+jieba>=0.42.1           # word segmentation — Chinese has no spaces
+pypinyin>=0.51          # reading + tones (ported approach from Blip's lang.py)
+
+# --- capture ---
+mss>=9.0                # fast screen-region grabs
+Pillow>=10.0            # image handling / hashing / the spike's synthetic frames
+numpy>=1.26             # array ops for change-detection hashing
+
+# --- dev ---
+pytest>=8.0

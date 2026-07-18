@@ -1,0 +1,33 @@
+# Blipfeed data — never commit user captures or the frequency store
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+data/captures/
+data/cedict/cedict_ts.u8
+logs/
+
+# OCR / model caches
+.paddleocr/
+*.onnx
+*.pdmodel
+*.pdiparams
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.spec
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
