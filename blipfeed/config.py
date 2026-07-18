@@ -43,6 +43,8 @@ DEFAULTS = {
     # promotion policy (the gate)
     "min_count": 2,                     # N: sightings before a term is eligible
     "max_promotions_per_snapshot": 2,   # K: cap so a dense frame can't flood
+    "min_promote_length": 2,            # skip 1-char basics (很/好/去/太) when
+                                        # AUTO-carding; they stay visible in review
     "auto_card": True,                  # False = nothing cards without the user
 
     # output
@@ -55,6 +57,7 @@ _RANGES = {
     "furniture_threshold": (1, 20),
     "min_count": (1, 50),
     "max_promotions_per_snapshot": (1, 50),
+    "min_promote_length": (1, 10),
     "min_confidence": (0.0, 1.0),
 }
 

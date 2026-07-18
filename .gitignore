@@ -37,3 +37,6 @@ Thumbs.db
 
 # Local user config (region, knobs) — machine-specific
 config.json
+
+# Spike outputs (generated decks, never the real one)
+spikes/out/

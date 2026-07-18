@@ -196,8 +196,10 @@ blipfeed/
   capture.py        screen/region/window grab (mss) + change-detection hash
   ocr.py            OCR provider interface; RapidOcrProvider (see Decisions #3)
   furniture.py      static-text suppression: drop lines stable across snapshots (tested)
-  segment.py        jieba segmentation + token filtering (LOAD-BEARING, tested)
-  dict.py           CC-CEDICT load + lookup (meaning, dict_ok, hsk optional)
+  segment.py        jieba segmentation + token filtering + growable user dict
+                    (LOAD-BEARING, tested)
+  dictionary.py     CC-CEDICT load + lookup (meaning, dict_ok, both scripts).
+                    Named `dictionary`, not `dict`, to never shadow the builtin.
   lang.py           reading/tones via pypinyin (ported from Blip, Chinese-only bit)
   hanzi.py          trad↔simp: canonicalize for dedup, CEDICT-derived map (tested)
   store.py          SQLite: schema, upsert observation, term state (tested)

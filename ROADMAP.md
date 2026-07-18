@@ -112,33 +112,48 @@ Get pixels into text, cheaply and only when they change.
   monitors enumerated via mss, picker spans the virtual desktop. Verified live.
 - ☐ Window-capture as an alternative source (capture a specific window handle).
 
-## Phase 4 — Segmentation + frequency + promotion ★ ☐
+## Phase 4 — Segmentation + frequency + promotion ☑ DONE ★
 
 The heart. Turns recognized text into ranked, gated cards.
 
-- ☐ `segment.py` — jieba segmentation + token filter (drop punctuation, latin,
-  digits, single-char particles via a stoplist). **Load-bearing and unit-tested**
-  against known sentences — bad splits corrupt every count silently. Support a
-  **growable jieba user dictionary** (`jieba.load_userdict`) so a slang term added
-  once (万魂幡) stays merged thereafter — the real-frame test showed OOV slang is the
-  thing jieba fragments (see spikes/FINDINGS.md).
-- ☐ `dict.py` — CC-CEDICT load + lookup: `meaning`, `dict_ok`, optional `hsk_level`.
-- ☐ `lang.py` — reading/tones via pypinyin (ported from Blip; the only Chinese-only
-  logic besides segment/dict).
-- ☐ `frequency.py` — **ingestion**: recognized line → tokens → observations (with
-  context sentence). Pure over `store.py`, tested.
-- ☐ `frequency.py` — **promotion policy** (the gate): eligible = `status ∈
-  {new,queued}` ∧ `count ≥ N` ∧ `dict_ok` ∧ confidence-ok ∧ not-known; promote up to
-  `K` per snapshot, highest count first; overflow stays queued. Defaults **N=2,
-  K=2**. Pure and seedable — test it directly, it's the product's brain.
-  - **Phase 1 spike lesson:** `dict_ok` is necessary but not sufficient. Add a
-    **commonness/difficulty filter** — 很/好/去/太 pass CEDICT but are too basic to
-    card. And treat a CEDICT *miss* as "low-priority, keep in queue" not "discard":
-    compositional words like 很多 aren't headwords but are real (see
-    spikes/FINDINGS.md).
-- ☐ `blip_link.py` — locate Blip's user dir; write/merge the `immersion` deck in
-  Blip's schema-1 format. Enrich at promotion (CC-CEDICT meaning + pypinyin +
-  best context sentence). **Never write a card without a meaning** (Blip rejects it).
+**End-to-end verified** (`spikes/full_pipeline_spike.py`): frames → OCR → furniture →
+segment → CC-CEDICT + pypinyin → store → gate → a real Blip deck. On a 5-frame run
+with shipped defaults, 学习 and 中文 crossed `N=2` on snapshot 4 and were written as
+valid Blip cards (both scripts, tones, mined example sentence). The needs-a-definition
+bucket caught exactly the predicted set: OCR garbage (一音, 今天天气, 哈哈哈) plus the
+compositional miss 很多 — quarantined from carding, none discarded.
+
+- ☑ `segment.py` — jieba + token filter. One rule (must contain a Chinese char)
+  removes punctuation/latin/digits/emoji; a stoplist removes particles and pronouns.
+  Ordinary-but-easy words are deliberately NOT filtered here — "too basic for me" is a
+  promotion concern. **Growable user dictionary** (`add_user_word`) so a merged slang
+  term stays one token; `tokenize()` exposes raw tokens for manual-mode chips.
+- ☑ `dictionary.py` — CC-CEDICT lookup: `meaning`, `dict_ok`, and **both script
+  forms** (fills the card's `alt`). Prefers a real gloss over "variant of …".
+  Named `dictionary` so it never shadows the builtin `dict`.
+- ☑ `lang.py` — reading/tones via pypinyin. Works for **any** term, dictionary or not
+  (万魂幡 → wàn hún fān), so a miss is only ever missing its meaning.
+- ☑ `frequency.py` — **ingestion**: line → tokens → observations with the context
+  sentence, enriched on first sight. Lossless; decides nothing about cards.
+- ☑ `frequency.py` — **promotion policy** (the gate): `status ∈ {new,queued}` ∧
+  `meaning IS NOT NULL` ∧ `count ≥ N` ∧ `ocr_conf_max ≥ min_confidence` ∧
+  `len(term) ≥ min_promote_length`; up to **K** per snapshot, highest count first;
+  overflow stays queued. Defaults **N=2, K=2**. `select_for_promotion()` is pure
+  (no writes) so the policy is tested directly — it's the product's brain.
+  `auto_card=False` disables promotion entirely.
+  - **Spike lesson applied:** the commonness filter is `min_promote_length=2`, so
+    1-char basics (很/好/去/太) never auto-card but stay visible in review. And a
+    CEDICT *miss* is never discarded — with no meaning it simply can't be cardable,
+    so it routes to needs-a-definition (很多 landed there exactly as predicted).
+  - **Ordering guard:** `promote()` runs the deck write *before* carding, so a failed
+    write can't leave a term marked carded with no card to show for it.
+- ☑ `blip_link.py` — all Blip coupling lives here; writes/merges the `immersion`
+  deck in Blip's schema-1 (id/term/reading/tones/cat/meaning/note/alt). Merges by
+  term so re-running never duplicates; ids unique within the deck; the mined sentence
+  becomes the card's `note`. **Never writes a card without a meaning.** Falls back to
+  Blipfeed's own `decks/` if Blip isn't found, and starts a fresh deck if the existing
+  one is corrupt — losing mined words to a moved path or a bad file is the worst
+  failure here.
 
 **End of Phase 4 = the app works end to end**: run it over a video, get an immersion
 deck of the words you saw, review them in Blip. Everything after is quality.
