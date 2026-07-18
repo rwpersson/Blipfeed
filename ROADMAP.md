@@ -13,39 +13,44 @@ data model this roadmap builds.
 
 ---
 
-## Phase 0 — Foundations ☐
+## Phase 0 — Foundations ☑ DONE
 
 Nothing glamorous; everything after is harder without it.
 
-- ☐ `git init` + `.gitignore` (`*.sqlite*`, `__pycache__/`, `dist/`, `build/`,
-  model caches, captured images)
-- ☐ `requirements.txt` — `paddleocr`, `paddlepaddle`, `jieba`, `pypinyin`, `mss`,
-  `Pillow`, `numpy` (pin what matters; PaddleOCR pulls a lot)
-- ☐ `LICENSE` (MIT, matching Blip) + attribution for **CC-CEDICT** (CC BY-SA) and any
-  HSK word lists
+- ☑ `git init` + `.gitignore` (`*.sqlite*`, `__pycache__/`, `dist/`, `build/`,
+  model caches, captured images, and `spikes/frames/real/` — real captures contain the
+  user's desktop)
+- ☑ `requirements.txt` — `rapidocr-onnxruntime`, `jieba`, `pypinyin`, `mss`,
+  `Pillow`, `numpy` (paddle dropped — see Phase 1)
+- ☑ `LICENSE` (MIT, matching Blip) + `ATTRIBUTION.md` for **CC-CEDICT** (CC BY-SA)
+  and the libraries
 - ☑ `CLAUDE.md` context doc
 - ☑ `ROADMAP.md` (this file)
-- ☐ `paths.py` — where Blipfeed's own data lives (dev in-tree, frozen `%APPDATA%\Blipfeed\`)
-- ☐ `logging_setup.py` — no bare `except: pass` (Blip's rule; you can't debug a
-  stranger's crash otherwise)
+- ☑ `paths.py` — Blipfeed's data (dev in-tree, frozen `%APPDATA%\Blipfeed\`), plus
+  `blip_user_dir()` so the Blip coupling lives in one place
+- ☑ `logging_setup.py` — rotating file + console, UTF-8 console fix (cp1252 crashes
+  on hanzi), no bare `except: pass`
 
-## Phase 1 — Spike the risky unknowns ☐
+## Phase 1 — Spike the risky unknowns ☑ DONE
 
-Prove the two things that could sink the design before building around them. Throwaway
-scripts are fine here.
+Prove the things that could sink the design before building around them. Throwaway
+scripts (`spikes/`), durable conclusions (`spikes/FINDINGS.md`).
 
-- ☐ **PaddleOCR on real hardsubs** — grab a Douyin/YouTube subtitle frame, OCR it,
-  eyeball accuracy + confidence + per-char boxes. Measure cold init time and
-  per-snapshot latency on a CPU-only machine. This decides whether 30s is even the
-  right floor.
-- ☐ **jieba on OCR output** — segment a few real recognized lines; sanity-check the
-  splits and how much is punctuation/particles/garbage. Confirms Chinese segmentation
-  is good enough to build frequency on.
-- ☐ **CC-CEDICT lookup** — load it, look up the segmented tokens; confirm hit rate
-  (real words found, garbage rejected). This is both `meaning` and the `dict_ok`
-  gate.
-- ☐ Decision checkpoint: if any of the three is worse than hoped, adjust Decisions in
-  CLAUDE.md *before* Phase 2, not after.
+- ☑ **OCR on real hardsubs** — ran on synthetic frames *and* two real full-screen
+  Douyin captures. RapidOCR read the stylized 万魂幡 hardsub correctly at conf
+  0.78–0.82; ~1.8s cold init, ~1s/frame cropped. 30s ticks are comfortable.
+- ☑ **Engine decision reversed: RapidOCR, not paddlepaddle** — paddlepaddle has no
+  Python 3.14 wheel, and RapidOCR runs the same PP-OCR models on onnxruntime (same
+  accuracy, far lighter to bundle). Folded into Decisions #3.
+- ☑ **jieba on OCR output** — good on ordinary text; found that **OOV slang
+  fragments** (万魂幡 → 万魂/幡), which is why manual chip-merge + a growable user
+  dictionary are in Phases 4/6.
+- ☑ **CC-CEDICT lookup** — 120,964 entries, 0.3s load, 83–90% hit rate. Crucially it
+  showed `dict_ok` filters OCR *garbage* but is **powerless against real-word chrome**
+  (游戏/音乐/影视 are all valid entries) — which is what made furniture detection
+  non-negotiable rather than optional.
+- ☑ Decision checkpoint resolved: Decisions #3 (engine) reversed, #2b (modes) and the
+  furniture gotcha added, all *before* Phase 2 — as intended.
 
 ## Phase 2 — The store ☑ DONE ★
 
@@ -70,30 +75,39 @@ to it.
 - ☑ Tests: **15 passing** — counts, per-language uniqueness, both-forms, buckets,
   card-once, cardable-invariant, known-seeding, context mining, recount.
 
-## Phase 3 — Capture ☐
+## Phase 3 — Capture ☑ DONE
 
 Get pixels into text, cheaply and only when they change.
 
-- ☐ `capture.py` — grab a screen **region** (mss) on a ~30s timer (configurable).
-  **AUTO mode is headless** — no window at all, so nothing can steal focus and it can
-  run while gaming (CLAUDE.md Decisions #6).
-- ☐ `ui/region.py` — **visual drag-select region picker**, an ordinary focus-taking
-  fullscreen window (picking a region is a deliberate setup step, so focus is fine —
-  no Win32 gymnastics needed). Persisted per source/session. Beats typing coordinates.
-- ☐ **Change-detection** — hash the captured region; identical to the previous
-  snapshot ⇒ skip OCR, record nothing. The primary dedup (CLAUDE.md frequency rule
-  #1). Kills paused-screen inflation.
-- ☐ `ocr.py` — provider interface + `RapidOcrProvider`. Lazy, load-once, off the UI
-  thread (init ~1.8s). Returns lines with confidence + boxes.
-- ☐ `furniture.py` — **static-text suppression** (the chrome fix, NOT a stoplist).
-  Key each OCR line on `(text + rounded box)`; a line stable across ≥ M snapshots is
-  UI furniture (nav/URL/taskbar/watermark) and is dropped *before counting* — else
-  chrome, being on screen constantly, would dominate the frequency ranking. Content
-  in a fixed box with changing text is kept. Auto-calibrates to any app. Tested
-  against a synthesized "static nav + changing subtitle" sequence.
+- ☑ `capture.py` — `Capturer` grabs a screen **region** (mss) as BGR; monitor helpers
+  + a `bottom_third()` default (subtitles live low). **AUTO mode is headless** — no
+  window at all, so nothing can steal focus and it can run while gaming (Decisions
+  #6). `set_dpi_aware()` verified live: reports the true 1920×1200 where an
+  unaware process would see 1536×960 on this 125%-scaled machine.
+- ☑ `ui/region.py` — **visual drag-select region picker**, an ordinary focus-taking
+  fullscreen window spanning the virtual desktop, with a live size readout and Esc to
+  cancel. `python -m blipfeed.ui.region` runs it standalone.
+- ☑ **Change-detection** — `frame_hash` (exact) + `ChangeDetector`: identical frame ⇒
+  skip OCR. Kills paused-screen inflation. Note it only saves *OCR cost*; a subtitle
+  held while video moves behind it needs the text-level dedup that `furniture.py`
+  provides — the two compose.
+- ☑ `ocr.py` — provider interface + `RapidOcrProvider` (lazy, load-once, ~1.8s init),
+  returning `OcrLine(text, confidence, bbox)`. `NullProvider` lets the pipeline be
+  exercised without the OCR stack.
+- ☑ `furniture.py` — **static-text suppression** (the chrome fix, NOT a stoplist).
+  Keys each line on `(text, rounded position)`; a repeat is furniture and is dropped
+  *before counting*. Content in a fixed box with changing text is kept, and the same
+  word appearing as content elsewhere is never lost. **Leak invariant**: chrome leaks
+  at most `threshold-1` observations against the `N` promotion gate, so with
+  `threshold ≤ N` chrome can never reach a card.
+  *Verified on the real frames*: a static screen goes 73 lines → 0 kept on snapshot 2;
+  across two real frames exactly 8 lines were suppressed, all genuine chrome (tab
+  title, Incognito, taskbar), zero content false-positives (spikes/FINDINGS.md).
+- ☑ Tests: **40 green** (+9 furniture, +9 capture). The picker's drag interaction is
+  the one part not automatically tested — it needs a human to drag.
+- ☑ DPI / multi-monitor correctness — `set_dpi_aware()` + capture in real pixels;
+  monitors enumerated via mss, picker spans the virtual desktop. Verified live.
 - ☐ Window-capture as an alternative source (capture a specific window handle).
-- ☐ DPI / multi-monitor correctness — capture in real pixels (Blip's documented
-  trap); a region picked at 125% scaling maps to real coordinates.
 
 ## Phase 4 — Segmentation + frequency + promotion ★ ☐
 
