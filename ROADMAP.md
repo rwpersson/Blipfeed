@@ -75,7 +75,11 @@ to it.
 Get pixels into text, cheaply and only when they change.
 
 - ☐ `capture.py` — grab a screen **region** (mss) on a ~30s timer (configurable).
-  Region picked once via a drag overlay; persisted per session.
+  **AUTO mode is headless** — no window at all, so nothing can steal focus and it can
+  run while gaming (CLAUDE.md Decisions #6).
+- ☐ `ui/region.py` — **visual drag-select region picker**, an ordinary focus-taking
+  fullscreen window (picking a region is a deliberate setup step, so focus is fine —
+  no Win32 gymnastics needed). Persisted per source/session. Beats typing coordinates.
 - ☐ **Change-detection** — hash the captured region; identical to the previous
   snapshot ⇒ skip OCR, record nothing. The primary dedup (CLAUDE.md frequency rule
   #1). Kills paused-screen inflation.
@@ -153,13 +157,24 @@ where they surface.
   seed `status=known` from an HSK level, a word list, or Blip's graduated words
   (`state.json`).
 
-## Phase 6 — Control panel + sessions ☐
+## Phase 6 — Control surface + sessions ☐
 
-The always-there surface while immersing. Small and unobtrusive.
+Auto mode is headless, so its control surface is a **hotkey + tray**, not a window
+(CLAUDE.md Decisions #6). Everything the user deliberately opens is an ordinary
+focus-taking window.
 
+- ☐ `hotkeys.py` — **global hotkey** to start/stop a session and to trigger a manual
+  capture, so auto mode is controllable without alt-tabbing out of a game. Port
+  Blip's `RegisterHotKey` approach (register + message-pump on the *same* thread) —
+  the one Win32 piece worth borrowing.
+- ☐ **Tray icon** — start/stop, mode toggle, open review, quit. In headless auto mode
+  the tray effectively *is* the UI, so this matters more here than it did in Blip.
+  Needs an .ico (shared with packaging, Phase 8).
+- ☐ **Auto mode stays silent** — no toasts when a word is carded; that's the
+  interruption we're avoiding. Words accumulate, the user reviews after.
 - ☐ `ui/panel.py` — start/stop capture, pick region, name the session, **AUTO/MANUAL
   mode toggle**, live counters (snapshots taken, words seen, cards made). **Capture
-  state always visible, one click to stop** (CLAUDE.md privacy decision #6).
+  state always visible, one click to stop** (CLAUDE.md privacy decision #7).
 - ☐ `ui/pick.py` — **MANUAL-mode chip picker**: freeze the snapshot, overlay every
   detected word as a clickable chip (furniture-filtered so it's not cluttered), user
   taps the ones to keep → they observe into the store. The precision path for dense

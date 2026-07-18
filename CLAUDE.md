@@ -250,7 +250,28 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
    `segment.py` / `dict.py` / `lang.py`.
 5. **Enrichment is offline (CC-CEDICT + pypinyin); AI is manual and optional.** No
    paid API in the pipeline, ever (see Enrichment above).
-6. **Privacy: local-only, explicit region, visibly toggled.** An app that reads "any
+6. **Focus model: Blipfeed is NOT Blip — most windows may take focus.** Blip's
+   never-steal-focus invariant exists because it draws a card over your live game.
+   Blipfeed is a mining tool that inherently asks for a little more work, so
+   focus-taking is fine for anything the user *deliberately opens*: the manual-mode
+   chip picker, the region picker, the control panel, the review queue — all ordinary
+   Tk windows, no Win32 gymnastics. **Do not port Blip's `prevent_focus_steal`
+   machinery wholesale.** The split:
+   - **AUTO mode is headless** — `timer → grab → OCR → furniture → segment → store`
+     draws *nothing*. `mss` is a passive pixel read, so it takes no focus by
+     construction (stronger than NOACTIVATE, and far less code). It can run while the
+     user games. Its control surface is a **global hotkey** (`RegisterHotKey` —
+     the one piece worth borrowing from Blip's `hotkeys.py`) plus a **tray icon**;
+     in a headless mode the tray effectively *is* the UI.
+   - **AUTO mode stays silent** — no toasts/popups when a word is carded. That would
+     be exactly the interruption we're avoiding. Words accumulate; the user reviews
+     after.
+   - **MANUAL mode and every deliberate window may take focus**, normally.
+
+   Caveat (not focus-related): `mss` captures the desktop, so a genuinely *exclusive*
+   fullscreen game may not be capturable. Borderless/windowed is fine; the primary
+   browser use case is unaffected.
+7. **Privacy: local-only, explicit region, visibly toggled.** An app that reads "any
    screen" is reading everything — bank, email, DMs. Nothing leaves the machine;
    capture is an explicit region/window the user chooses; the capture state is always
    visible and one click to stop. This is both an ethics requirement and what makes
