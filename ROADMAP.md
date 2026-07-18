@@ -72,8 +72,14 @@ Get pixels into text, cheaply and only when they change.
 - ☐ **Change-detection** — hash the captured region; identical to the previous
   snapshot ⇒ skip OCR, record nothing. The primary dedup (CLAUDE.md frequency rule
   #1). Kills paused-screen inflation.
-- ☐ `ocr.py` — provider interface + `PaddleProvider`. Lazy, load-once, off the UI
-  thread (init is heavy). Returns lines with confidence + boxes.
+- ☐ `ocr.py` — provider interface + `RapidOcrProvider`. Lazy, load-once, off the UI
+  thread (init ~1.8s). Returns lines with confidence + boxes.
+- ☐ `furniture.py` — **static-text suppression** (the chrome fix, NOT a stoplist).
+  Key each OCR line on `(text + rounded box)`; a line stable across ≥ M snapshots is
+  UI furniture (nav/URL/taskbar/watermark) and is dropped *before counting* — else
+  chrome, being on screen constantly, would dominate the frequency ranking. Content
+  in a fixed box with changing text is kept. Auto-calibrates to any app. Tested
+  against a synthesized "static nav + changing subtitle" sequence.
 - ☐ Window-capture as an alternative source (capture a specific window handle).
 - ☐ DPI / multi-monitor correctness — capture in real pixels (Blip's documented
   trap); a region picked at 125% scaling maps to real coordinates.
@@ -106,19 +112,33 @@ The heart. Turns recognized text into ranked, gated cards.
 **End of Phase 4 = the app works end to end**: run it over a video, get an immersion
 deck of the words you saw, review them in Blip. Everything after is quality.
 
-## Phase 5 — The mining queue (review UI) ☐
+## Phase 5 — The mining queue + enrichment (review UI) ★ ☐
 
-Where the user tunes what the automation did. A view over `terms`, not a new store.
+Where the user tunes what the automation did — and where the high-value slang words
+live. A set of *views* over `terms`, not a new store. This is arguably the primary
+surface, not an afterthought: on real content the words worth learning are
+disproportionately the CEDICT-misses (万魂幡, 婚姻危机, 凡人歌 — verified), and this is
+where they surface.
 
-- ☐ `ui/review.py` (`python -m blipfeed.review`) — frequency-ranked list of
-  `new`/`queued` terms with meaning, reading, count, and mined example sentences.
+- ☐ `ui/review.py` (`python -m blipfeed.review`) — two prominent buckets + a
+  collapsed tail (see CLAUDE.md data model):
+  - **Needs a definition** (loudest): `meaning IS NULL ∧ count≥N` — the slang/nuance
+    list, ranked by frequency, each row already carrying reading (pypinyin) + mined
+    context sentences. These are NEVER discarded and NEVER silently auto-carded.
+  - **Ready to card**: `meaning IS NOT NULL ∧ count≥N` — CEDICT filled the meaning;
+    one-click accept (or auto-carded if `auto_card` is on).
+  - **Long tail**: `count<N`, hidden by default (one-offs + OCR noise).
 - ☐ Actions: **accept → card**, **ignore**, **mark known**, **edit** meaning/note.
-  Each just sets `status` / fields.
-- ☐ Knob controls: N (eligibility threshold) and K (per-snapshot cap) as sliders,
-  persisted.
-- ☐ **"Copy candidates"** — export a batch to the clipboard so the user can paste
-  into any AI themselves and paste enriched notes back. This is the *only* AI path —
-  manual, free, opt-in (CLAUDE.md Decisions #5).
+  Each just sets `status` / fields. A term becomes cardable the moment it has a
+  `meaning`.
+- ☐ **The manual-AI enrichment loop** (CLAUDE.md Enrichment; the only AI path, free):
+  - **"Copy for AI"** — export the *Needs a definition* batch as text, each row
+    `term · reading · freq · 1–3 context sentences` — everything a chat model needs
+    to define slang *in context*.
+  - **"Paste enriched"** — forgiving `term<TAB>meaning<TAB>note` re-import that fills
+    `meaning`/`note` and moves the term to *Ready to card*.
+- ☐ Knob controls: N (eligibility threshold), K (per-snapshot cap), and `auto_card`
+  on/off (off = nothing cards without you; everything routes to review) — persisted.
 - ☐ A **known-words import** so you don't get carded for words you already know:
   seed `status=known` from an HSK level, a word list, or Blip's graduated words
   (`state.json`).
@@ -127,9 +147,13 @@ Where the user tunes what the automation did. A view over `terms`, not a new sto
 
 The always-there surface while immersing. Small and unobtrusive.
 
-- ☐ `ui/panel.py` — start/stop capture, pick region, name the session, live counters
-  (snapshots taken, words seen, cards made). **Capture state always visible, one
-  click to stop** (CLAUDE.md privacy decision #6).
+- ☐ `ui/panel.py` — start/stop capture, pick region, name the session, **AUTO/MANUAL
+  mode toggle**, live counters (snapshots taken, words seen, cards made). **Capture
+  state always visible, one click to stop** (CLAUDE.md privacy decision #6).
+- ☐ `ui/pick.py` — **MANUAL-mode chip picker**: freeze the snapshot, overlay every
+  detected word as a clickable chip (furniture-filtered so it's not cluttered), user
+  taps the ones to keep → they observe into the store. The precision path for dense
+  frames (CLAUDE.md Decisions #2b).
 - ☐ Session boundaries — a session is a sitting (a video, a scroll); review "words
   from *that* video."
 - ☐ Pause/resume; auto-pause when the capture source window isn't foreground
