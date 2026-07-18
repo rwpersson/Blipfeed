@@ -189,22 +189,45 @@ where they surface.
   seed `status=known` from an HSK level, a word list, or Blip's graduated words
   (`state.json`).
 
-## Phase 6 — Control surface + sessions ☐
+## Phase 6 — Control surface + sessions ◐ MOSTLY DONE
 
 Auto mode is headless, so its control surface is a **hotkey + tray**, not a window
 (CLAUDE.md Decisions #6). Everything the user deliberately opens is an ordinary
 focus-taking window.
 
-- ☐ `hotkeys.py` — **global hotkey** to start/stop a session and to trigger a manual
-  capture, so auto mode is controllable without alt-tabbing out of a game. Port
-  Blip's `RegisterHotKey` approach (register + message-pump on the *same* thread) —
-  the one Win32 piece worth borrowing.
+**The app runs**: `python -m blipfeed` captures on a timer, mines words, and writes
+Blip cards. Verified live against a real screen (38 OCR lines/tick; 37 suppressed as
+chrome on the second tick of a static screen).
+
+- ☑ `session.py` — `CaptureSession.tick()`: grab → change-detect → OCR → furniture →
+  ingest → promote, in that order (change-detection first is the cheap win; furniture
+  before counting is mandatory; promotion after ingest so a term can cross on the
+  tick that pushed it). Every dependency is injectable, so the loop is tested headless.
+  A failing tick is logged and survived, never fatal to the sitting. `run()` waits on
+  an Event so stopping is immediate rather than waiting out the interval.
+- ☑ `__main__.py` — `python -m blipfeed` (also `--manual`, `--region`, `--once`,
+  `--status`). Prints a per-tick readout when you're watching; draws nothing on screen.
+- ☑ `ui/pick.py` — MANUAL chip picker over the frozen frame, with **adjacent-chip
+  merge** that fixes OOV slang (万魂 + 幡 → 万魂幡) and teaches it to the segmenter
+  permanently via `segment.add_user_word`.
+- ☑ Only one picker window at a time (a lock), because a second live Tk root in one
+  process is the bug Blip documents (gotcha #13).
+
+- ☑ `hotkeys.py` — **global hotkeys** (stop / capture-now / redraw-region), so auto
+  mode is controllable without alt-tabbing out of a game. Registers and pumps on the
+  *same* thread (Blip gotcha #7 — messages only arrive on the registering thread).
+  A combo that's taken or misspelled is reported **by name** rather than silently
+  dead. Callbacks hand off to a worker so the pump never blocks.
 - ☐ **Tray icon** — start/stop, mode toggle, open review, quit. In headless auto mode
   the tray effectively *is* the UI, so this matters more here than it did in Blip.
   Needs an .ico (shared with packaging, Phase 8).
 - ☐ **Auto mode stays silent** — no toasts when a word is carded; that's the
   interruption we're avoiding. Words accumulate, the user reviews after.
-- ☐ **"Redraw region" must be reachable at any time** — a panel button *and* a global
+- ☑ **"Redraw region" reachable at any time** — global hotkey (default
+  `ctrl+alt+r`) reopens the picker mid-session, then resets the change detector and
+  furniture state (a new region means different chrome) and saves. Still to add to the
+  panel below.
+- ☐ (was) **"Redraw region" from a panel button** — a panel button *and* a global
   hotkey, not just the CLI. Changing what you're capturing is a normal thing to do
   mid-session (you switch video, resize the window), so it can't require a terminal.
   `ui/region.pick_region(current=…)` already handles the redraw; this is just wiring.

@@ -47,6 +47,12 @@ DEFAULTS = {
                                         # AUTO-carding; they stay visible in review
     "auto_card": True,                  # False = nothing cards without the user
 
+    # global hotkeys — AUTO mode is headless, so these are its control surface
+    # (CLAUDE.md Decisions #6). They must work while a game has focus.
+    "hotkey_toggle": "ctrl+alt+b",       # start/stop capture
+    "hotkey_manual": "ctrl+alt+n",       # capture now -> manual chip picker
+    "hotkey_region": "ctrl+alt+r",       # redraw the capture region
+
     # output
     "blip_deck_id": "immersion",
 }
