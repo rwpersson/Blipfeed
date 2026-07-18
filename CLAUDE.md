@@ -37,7 +37,7 @@ promotion decides.
 every ~30s (configurable; NOT continuous — see Decisions #2):
   grab region  →  perceptual/exact hash
   →  unchanged since last snapshot? SKIP  (kills paused-screen frequency inflation)
-  →  PaddleOCR                (lines + per-line confidence + boxes)
+  →  RapidOCR (PP-OCR/onnx)  (lines + per-line confidence + boxes)
   →  jieba segmentation       (Chinese has no spaces — this is where "words" happen)
   →  filter: drop punctuation / latin / digits / single-char particles (的了是…)
   →  for each kept token: write an OBSERVATION (term + its context sentence)
@@ -142,7 +142,7 @@ opposite: unbounded, append-only, needs ranking/filter/dedup queries. **SQLite
 blipfeed/
   __main__.py       entry (python -m blipfeed)
   capture.py        screen/region/window grab (mss) + change-detection hash
-  ocr.py            OCR provider interface; PaddleProvider (see Decisions #3)
+  ocr.py            OCR provider interface; RapidOcrProvider (see Decisions #3)
   segment.py        jieba segmentation + token filtering (LOAD-BEARING, tested)
   dict.py           CC-CEDICT load + lookup (meaning, dict_ok, hsk optional)
   lang.py           reading/tones via pypinyin (ported from Blip, Chinese-only bit)
@@ -160,17 +160,22 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
 
 1. **Separate app, emits Blip decks.** Not a module inside Blip. Blip's whole
    architecture is isolated processes protecting focus/click-through invariants;
-   PaddleOCR is a hundreds-of-MB native dependency that must never be dragged into
+   the OCR stack (onnxruntime + opencv + models, ~100+ MB) must never be dragged into
    Blip's lean footprint. The boundary is the deck JSON. A future target (Anki) would
    slot in at the same seam.
 2. **Snapshot-based (~30s default), NOT continuous.** Continuous full-frame OCR is
    wasteful and floods the store; the user explicitly does not want it. A timer tick
    + change-detection is cheaper and cleaner. Interval is configurable (5–120s).
-3. **OCR = PaddleOCR, local.** Best-in-class Chinese OCR, offline, private, no
-   per-use cost — correct for an always-watching screen reader. Heavy install is the
-   accepted cost and the reason this is a separate app. Behind an `ocr.py` provider
-   interface so a cloud/Tesseract engine could slot in; local Paddle is the default
-   and the only one shipped.
+3. **OCR = RapidOCR (ONNXRuntime), local.** Runs the *same* PP-OCR models as
+   PaddleOCR but on onnxruntime instead of paddlepaddle. Chosen over paddlepaddle in
+   the Phase 1 spike for two reasons: (a) paddlepaddle has **no wheel for Python
+   3.14**, the interpreter here; (b) onnxruntime is far lighter than paddle and much
+   friendlier to bundle (defuses a Phase 8 packaging risk), at equivalent accuracy.
+   Offline, private, no per-use cost — correct for an always-watching screen reader.
+   Behind an `ocr.py` provider interface so a cloud/Tesseract engine could slot in;
+   RapidOCR is the default and the only one shipped. Spike numbers: cold init ~1.8s,
+   ~1s/frame on CPU, conf 0.7–0.9 — comfortably inside a 30s tick. See
+   spikes/FINDINGS.md.
 4. **Chinese-first, seams for more.** jieba + CC-CEDICT + pypinyin nail Chinese, but
    segmentation and dictionary sit behind interfaces so Japanese/others slot in later
    — mirroring Blip's language-agnostic deck model. Don't hardcode Chinese outside
@@ -190,8 +195,8 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
 - **OCR confidence must reach promotion.** A low-confidence line that happens to
   segment into a real CEDICT word is a trap; carry `ocr_conf_max` on the term and
   gate on it, don't card on text alone.
-- **PaddleOCR init is slow and heavy** (model load, possible GPU/CPU paths). Load it
-  once, lazily, off the UI thread; never re-init per snapshot.
+- **OCR init is slow-ish and heavy** (~1.8s model load; first frame ~1.7s, then
+  ~1s). Load the engine once, lazily, off the UI thread; never re-init per snapshot.
 - **Region capture across DPI / multi-monitor** — same trap Blip documents. Capture
   in real pixels; a region picked at 125% scaling must map to real coordinates.
 - **The immersion deck can grow without bound.** Cap it / roll by date

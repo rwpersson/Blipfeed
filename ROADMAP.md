@@ -94,6 +94,11 @@ The heart. Turns recognized text into ranked, gated cards.
   {new,queued}` ∧ `count ≥ N` ∧ `dict_ok` ∧ confidence-ok ∧ not-known; promote up to
   `K` per snapshot, highest count first; overflow stays queued. Defaults **N=2,
   K=2**. Pure and seedable — test it directly, it's the product's brain.
+  - **Phase 1 spike lesson:** `dict_ok` is necessary but not sufficient. Add a
+    **commonness/difficulty filter** — 很/好/去/太 pass CEDICT but are too basic to
+    card. And treat a CEDICT *miss* as "low-priority, keep in queue" not "discard":
+    compositional words like 很多 aren't headwords but are real (see
+    spikes/FINDINGS.md).
 - ☐ `blip_link.py` — locate Blip's user dir; write/merge the `immersion` deck in
   Blip's schema-1 format. Enrich at promotion (CC-CEDICT meaning + pypinyin +
   best context sentence). **Never write a card without a meaning** (Blip rejects it).

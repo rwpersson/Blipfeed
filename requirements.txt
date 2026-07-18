@@ -1,16 +1,14 @@
 # Blipfeed dependencies.
 #
-# The OCR stack is heavy and native — this is the accepted cost of a separate app
-# (see CLAUDE.md Decisions #1/#3). Versions are floors; pin hard once the spike
-# (ROADMAP Phase 1) confirms a working combination on this Python.
-#
-# NOTE: PaddlePaddle wheels lag new Python releases. If there is no wheel for the
-# installed interpreter, the spike falls back to a lighter engine and this gets
-# revisited — do not assume paddle installs clean on 3.14+.
+# OCR engine decided by the Phase 1 spike: RapidOCR (ONNXRuntime backend), NOT
+# paddlepaddle. paddlepaddle has no wheel for Python 3.14 (the installed
+# interpreter), and RapidOCR runs the *same* PP-OCR models on onnxruntime — same
+# accuracy, far lighter, and much friendlier to bundle later. See CLAUDE.md
+# Decisions #3 and spikes/FINDINGS.md.
 
 # --- OCR ---
-paddleocr>=2.7          # PP-OCR pipeline (detection + recognition)
-paddlepaddle>=2.6       # inference runtime for PaddleOCR (CPU build)
+rapidocr-onnxruntime>=1.2   # PP-OCR models on onnxruntime (det + rec + cls)
+# onnxruntime, opencv-python, pyclipper, shapely come in transitively.
 
 # --- segmentation + reading (Chinese) ---
 jieba>=0.42.1           # word segmentation — Chinese has no spaces
