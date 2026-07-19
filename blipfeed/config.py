@@ -79,6 +79,11 @@ DEFAULTS = {
     "hotkey_manual": "ctrl+alt+n",       # capture now -> manual chip picker
     "hotkey_region": "ctrl+alt+r",       # redraw the capture region
 
+    # known words. No list = beginner = everything surfaces, which is the honest
+    # default for someone we know nothing about (see known.py).
+    "blip_graduate_at": 9,              # mirrors Blip's GRADUATE_AT; exposures at or
+                                        # past this mean Blip considers it learned
+
     # output
     "blip_deck_id": "immersion",
 }

@@ -115,6 +115,83 @@ def add_cards(deck, rows, contexts_by_term=None):
     return added
 
 
+def deck_files():
+    """Every deck JSON in Blip's deck dir (ours included — a term we already carded
+    shouldn't be mined again either)."""
+    d = deck_dir()
+    return sorted(d.glob("*.json")) if d.exists() else []
+
+
+def _read_deck(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("words"), list):
+            return data
+    except Exception:
+        log.exception("skipping unreadable Blip deck %s", path)
+    return None
+
+
+def _term_of(word):
+    """Blip's field accessors tolerate the pre-rename names, so ours must too."""
+    return word.get("term") or word.get("hanzi") or ""
+
+
+def deck_terms():
+    """Every term the user already has a Blip card for.
+
+    The single most valuable known-words source available: these words are already
+    being studied, so re-mining them would just mint duplicates.
+    """
+    out = set()
+    for path in deck_files():
+        deck = _read_deck(path)
+        if not deck:
+            continue
+        out.update(t for t in (_term_of(w) for w in deck["words"]) if t)
+    return out
+
+
+def graduated_terms(graduate_at=9):
+    """Terms Blip considers learned — `e` (exposures) at or past its GRADUATE_AT.
+
+    `state.json` keys words by their *deck-local* id, so the deck files are needed to
+    resolve those ids back to terms. Mirrors Blip's constant rather than importing it;
+    Blipfeed never imports Blip's package (Decisions #1).
+    """
+    base = paths.blip_user_dir()
+    if not base:
+        return set()
+    state_path = base / "state.json"
+    if not state_path.exists():
+        return set()
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        log.exception("unreadable Blip state at %s", state_path)
+        return set()
+
+    by_deck = {}
+    for path in deck_files():
+        deck = _read_deck(path)
+        if deck:
+            by_deck[path.stem] = {str(w.get("id")): _term_of(w)
+                                  for w in deck["words"]}
+    out = set()
+    for deck_id, entry in (state.get("decks") or {}).items():
+        ids = by_deck.get(deck_id, {})
+        for word_id, progress in (entry.get("words") or {}).items():
+            try:
+                exposures = int((progress or {}).get("e", 0))
+            except (TypeError, ValueError):
+                continue
+            if exposures >= graduate_at:
+                term = ids.get(str(word_id))
+                if term:
+                    out.add(term)
+    return out
+
+
 def remove_terms(deck, terms):
     """Drop words from a deck by term. Returns the terms actually removed."""
     wanted = set(terms)

@@ -307,6 +307,54 @@ def observe(conn, *, term, language="zh-CN", session_id=None, snapshot_id=None,
     return term_id
 
 
+def seed_known_bulk(conn, terms, language="zh-CN", status="known"):
+    """Mark many terms at once. Returns (created, updated).
+
+    Built for scale: a level list can be thousands of words, and the per-term
+    `seed_term` path costs several round-trips each. This is two `executemany`
+    statements in one transaction.
+
+    **Only promotes rows still in `new`.** A term you carded, ignored, or already know
+    keeps its status — a bulk import must never quietly undo an individual decision.
+    """
+    from . import hanzi
+
+    canon = []
+    seen = set()
+    for term in terms:
+        c, _alt = hanzi.canonicalize((term or "").strip(), language)
+        if c and c not in seen:
+            seen.add(c)
+            canon.append(c)
+    if not canon:
+        return 0, 0
+
+    ts = _now()
+    before = conn.execute("SELECT COUNT(*) FROM terms").fetchone()[0]
+    conn.executemany(
+        "INSERT OR IGNORE INTO terms(term, language, status, first_seen, last_seen) "
+        "VALUES(?,?,?,?,?)",
+        [(t, language, status, ts, ts) for t in canon])
+    created = conn.execute("SELECT COUNT(*) FROM terms").fetchone()[0] - before
+    cur = conn.executemany(
+        "UPDATE terms SET status=? WHERE language=? AND term=? AND status='new'",
+        [(status, language, t) for t in canon])
+    conn.commit()
+    updated = max((cur.rowcount or 0) - created, 0)
+    log.info("seeded %d known term(s): %d new, %d updated", len(canon),
+             created, updated)
+    return created, updated
+
+
+def known_count(conn, language=None):
+    sql = "SELECT COUNT(*) FROM terms WHERE status='known'"
+    params = []
+    if language:
+        sql += " AND language=?"
+        params.append(language)
+    return conn.execute(sql, params).fetchone()[0]
+
+
 def seed_term(conn, term, language="zh-CN", *, status="known", **fields):
     """Create a term with no observation — e.g. importing a known-words list so
     those words never get carded (status='known'). Idempotent-ish: returns the id,

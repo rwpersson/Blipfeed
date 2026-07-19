@@ -6,6 +6,9 @@
     python -m blipfeed --once           # a single tick, then exit (diagnostics)
     python -m blipfeed --status [--all] # what's in the store; capture nothing
     python -m blipfeed --clean [--yes]  # re-judge past cards against today's gate
+    python -m blipfeed --known-sync     # learn what you already know, from Blip
+    python -m blipfeed --known-import F # bulk-import a level list (HSK, frequency…)
+    python -m blipfeed --known-forget W # put a word back in play
 
 The region picker opens on **every** start, showing the saved region so you can see
 where mining will point and adjust it. Esc keeps it and proceeds.
@@ -122,6 +125,42 @@ def _clean(conn, cfg, argv):
     return 0
 
 
+def _known(conn, cfg, argv):
+    """Manage the known-words set — what the user already has.
+
+    No list at all is the beginner default (everything surfaces), so this only ever
+    *adds* evidence; it never assumes a level on the user's behalf.
+    """
+    from pathlib import Path
+
+    from . import known
+
+    if "--known-import" in argv:
+        path = Path(argv[argv.index("--known-import") + 1])
+        if not path.exists():
+            print(f"no such file: {path}")
+            return 1
+        created, updated = known.from_file(conn, path, cfg.language)
+        print(f"imported {path.name}: {created} new, {updated} marked known")
+    elif "--known-forget" in argv:
+        term = argv[argv.index("--known-forget") + 1]
+        ok = known.forget(conn, term, cfg.language)
+        print(f"{term}: back in play" if ok else f"{term}: not in the store")
+    else:                                    # --known-sync
+        result = known.sync_all(conn, cfg.language, cfg.get("blip_graduate_at", 9))
+        d_new, d_upd = result["blip_decks"]
+        g_new, g_upd = result["blip_graduated"]
+        # Report set size AND newly-marked separately: the graduated words are a
+        # subset of the deck words, so "newly marked: 0" is normal and must not be
+        # printed in a way that reads as "you've learned nothing".
+        print(f"Blip decks      : {result['deck_total']} term(s) you already have "
+              f"cards for  (+{d_new + d_upd} newly marked)")
+        print(f"Blip graduated  : {result['graduated_total']} term(s) Blip considers "
+              f"learned  (+{g_new + g_upd} newly marked)")
+        print(f"known total     : {result['total_known']}")
+    return 0
+
+
 def _show_status(conn, cfg, argv=()):
     rows = list(conn.execute(
         "SELECT status, COUNT(*) n, SUM(count) seen FROM terms GROUP BY status"))
@@ -131,6 +170,12 @@ def _show_status(conn, cfg, argv=()):
     print("terms by status:")
     for r in rows:
         print(f"  {r['status']:<10} {r['n']:>5} terms  ({r['seen']} sightings)")
+    n_known = store.known_count(conn, cfg.language)
+    if not n_known:
+        print("\nknown words: none yet — assuming beginner, so everything surfaces."
+              "\n  run --known-sync to import what you already have in Blip.")
+    else:
+        print(f"\nknown words: {n_known} (these never surface or card)")
     from . import frequency
 
     verbose = "--all" in argv
@@ -174,6 +219,8 @@ def main(argv=None):
         return _show_status(conn, cfg, argv)
     if "--clean" in argv:
         return _clean(conn, cfg, argv)
+    if any(a.startswith("--known") for a in argv):
+        return _known(conn, cfg, argv)
 
     capturer = capture.Capturer()
     region = _resolve_region(cfg, capturer, argv)
