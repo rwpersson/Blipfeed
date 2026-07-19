@@ -37,7 +37,9 @@ DEFAULTS = {
     "ocr_provider": "rapidocr",
 
     # noise control
-    "furniture_threshold": 2,           # suppress from the Nth identical sighting
+    "furniture_threshold": 2,           # MANUAL mode: suppress from the Nth sighting
+    "episode_max_ticks": 3,             # AUTO mode: a line on screen longer than this
+                                        # many snapshots is chrome, never recorded
     "min_confidence": 0.50,             # OCR confidence floor for promotion
 
     # promotion policy (the gate)

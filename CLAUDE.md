@@ -337,6 +337,20 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
   not chrome.) A "static for ≥ M snapshots" threshold keeps a briefly-held title from
   being mistaken for furniture.
 
+  **CORRECTION (from a real session): the per-sighting filter above is NOT enough for
+  AUTO ingestion.** The claimed invariant — "chrome leaks at most `threshold-1`
+  observations, safely under the `N` gate" — was wrong. The leak is per
+  `(text, position)` **key, not per word**. A word appearing in two different chrome
+  lines (Douyin's `是否要打开声音？` prompt *and* its `打开声音` button) leaked one
+  observation each, hit `count=2`, and got carded. Half a real session's cards were UI.
+  The fix is `furniture.EpisodeTracker`, used for AUTO ingestion: **record a line when
+  its appearance ENDS, not when it starts.** Chrome persists, so it never ends and is
+  never recorded — a true zero leak. A held subtitle is recorded exactly once when it
+  goes. Cost: a word lands in the store one tick after you saw it. `FurnitureFilter`
+  stays for MANUAL mode, which must de-clutter the frame immediately and can't wait
+  for an episode to finish. Remaining leak: a *transient* toast is indistinguishable
+  from content by persistence, so keep the region on the subtitle band.
+
   **`dict_ok` is NOT a chrome filter — furniture detection is the only one.** Proven
   on the real frames: a Douyin homepage OCR'd to 114 tokens with an 83–90% CEDICT hit
   rate, yet the top of the ranking was pure chrome (抖音×7, 精选×5, 三角洲×3) — because

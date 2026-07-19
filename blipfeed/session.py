@@ -35,24 +35,25 @@ log = get("session")
 class TickResult:
     """What one snapshot cycle did. Counts are for the panel/console readout."""
     skipped: bool = False               # frame unchanged -> no OCR
-    lines: int = 0                      # OCR lines recognized
-    kept: int = 0                       # after furniture suppression
+    lines: int = 0                      # OCR lines recognized this snapshot
+    chrome: int = 0                     # on-screen lines judged persistent furniture
+    recorded: int = 0                   # appearance episodes that ENDED and were kept
     observations: int = 0               # tokens recorded
     promoted: list = field(default_factory=list)   # terms carded this tick
     error: str = None
-
-    @property
-    def suppressed(self):
-        return self.lines - self.kept
 
 
 class CaptureSession:
     """One immersion sitting. Owns the per-session furniture state and counters."""
 
     def __init__(self, conn, cfg, region, *, capturer=None, provider=None,
-                 detector=None, filt=None, deck_writer=None, source="region",
-                 session_id=None, label=None):
+                 detector=None, filt=None, tracker=None, deck_writer=None,
+                 source="region", session_id=None, label=None):
         self.conn = conn
+        # The capture loop ticks on the main thread while a hotkey-triggered manual
+        # capture records from a worker. sqlite3 is opened with check_same_thread=
+        # False, so serializing here is what keeps that safe rather than corrupt.
+        self.lock = threading.RLock()
         self.cfg = cfg
         self.region = region
         self.source = source
@@ -60,7 +61,13 @@ class CaptureSession:
         self.provider = (provider if provider is not None
                          else ocr_mod.get_provider(cfg.get("ocr_provider")))
         self.detector = detector if detector is not None else capture.ChangeDetector()
-        # furniture state is per session and in memory, by design
+        # Furniture state is per session and in memory, by design. AUTO ingestion
+        # uses the EpisodeTracker (records a line when its appearance ends, so
+        # persistent chrome is never recorded at all); MANUAL mode keeps the
+        # immediate FurnitureFilter, because a chip picker can't wait for an episode
+        # to finish — it has to de-clutter the frame right now.
+        self.tracker = tracker if tracker is not None else furniture.EpisodeTracker(
+            max_ticks=cfg.get("episode_max_ticks", 3))
         self.filter = filt if filt is not None else furniture.FurnitureFilter(
             threshold=cfg.furniture_threshold)
         self.deck_writer = (deck_writer if deck_writer is not None
@@ -80,38 +87,46 @@ class CaptureSession:
         changed, digest = self.detector.changed(self.source, img)
         return img, changed, digest
 
-    def recognize(self, img):
-        """OCR, then strip static UI chrome. Returns (all_lines, kept_lines)."""
-        lines = self.provider.recognize(img)
-        return lines, self.filter.filter(lines)
+    def _record(self, lines, digest=None):
+        """Store a batch of ended episodes and run the promotion gate."""
+        if not lines:
+            return 0, []
+        snapshot_id = store.add_snapshot(
+            self.conn, self.session_id, source=self.source,
+            region=self.region.label(), image_hash=digest,
+            raw_text=ocr_mod.joined_text(lines), ocr_engine=self.provider.name)
+        ids = frequency.ingest(self.conn, lines, session_id=self.session_id,
+                               snapshot_id=snapshot_id, language=self.cfg.language)
+        self.conn.commit()
+        promoted = frequency.promote(self.conn, self.cfg,
+                                     deck_writer=self.deck_writer)
+        self.total_observations += len(ids)
+        self.total_promoted += [r["term"] for r in promoted]
+        return len(ids), [r["term"] for r in promoted]
 
     def tick(self):
-        """One full cycle. Never raises — a bad tick must not kill the session."""
+        """One full cycle. Never raises — a bad tick must not kill the session.
+
+        Words are recorded when a line **leaves** the screen, not when it arrives, so
+        persistent chrome is never recorded and a held subtitle counts once (see
+        `furniture.EpisodeTracker`). That means a word shows up in the store one tick
+        after you saw it — the delay is the price of not carding the UI.
+        """
         self.ticks += 1
         try:
-            img, changed, digest = self.grab()
-            if not changed:
-                log.debug("tick %d: unchanged, skipping OCR", self.ticks)
-                return TickResult(skipped=True)
+            with self.lock:
+                img, changed, digest = self.grab()
+                if not changed:
+                    # Nothing moved, so no episode can have ended either.
+                    log.debug("tick %d: unchanged, skipping OCR", self.ticks)
+                    return TickResult(skipped=True)
 
-            lines, kept = self.recognize(img)
-            snapshot_id = store.add_snapshot(
-                self.conn, self.session_id, source=self.source,
-                region=self.region.label(), image_hash=digest,
-                raw_text=ocr_mod.joined_text(lines), ocr_engine=self.provider.name)
-
-            ids = frequency.ingest(self.conn, kept, session_id=self.session_id,
-                                   snapshot_id=snapshot_id,
-                                   language=self.cfg.language)
-            self.conn.commit()
-
-            promoted = frequency.promote(self.conn, self.cfg,
-                                         deck_writer=self.deck_writer)
-            self.total_observations += len(ids)
-            self.total_promoted += [r["term"] for r in promoted]
-            return TickResult(lines=len(lines), kept=len(kept),
-                              observations=len(ids),
-                              promoted=[r["term"] for r in promoted])
+                lines = self.provider.recognize(img)
+                ended = self.tracker.update(lines)
+                n_obs, promoted = self._record(ended, digest)
+                return TickResult(lines=len(lines), chrome=self.tracker.persistent,
+                                  recorded=len(ended), observations=n_obs,
+                                  promoted=promoted)
         except Exception as exc:
             # A capture/OCR hiccup must not end the sitting; log it and tick on.
             log.exception("tick %d failed", self.ticks)
@@ -123,27 +138,35 @@ class CaptureSession:
 
         Deliberately does NOT ingest: in manual mode the user decides what counts.
         Skips change detection too — an explicit request should always produce a
-        frame, even if the screen hasn't moved.
+        frame, even if the screen hasn't moved. Uses the immediate FurnitureFilter
+        rather than episodes, because the picker must de-clutter the frame *now*.
         """
-        img = self.capturer.grab(self.region)
-        lines = self.provider.recognize(img)
-        return img, self.filter.filter(lines)
+        with self.lock:
+            img = self.capturer.grab(self.region)
+            lines = self.provider.recognize(img)
+            return img, self.filter.filter(lines)
 
     def record_manual(self, tokens, context=""):
-        """Record exactly the chips the user picked (already merged if they merged)."""
+        """Record exactly the chips the user picked (already merged if they merged).
+
+        Runs on a worker thread (the hotkey pump must not block), hence the lock —
+        without it sqlite3 raised a thread-affinity error and the user's picked words
+        were lost.
+        """
         if not tokens:
             return []
-        snapshot_id = store.add_snapshot(
-            self.conn, self.session_id, source=self.source,
-            region=self.region.label(), raw_text=context,
-            ocr_engine=self.provider.name)
-        ids = frequency.ingest_line(
-            self.conn, context or "".join(tokens), tokens=tokens,
-            session_id=self.session_id, snapshot_id=snapshot_id,
-            language=self.cfg.language)
-        self.conn.commit()
-        self.total_observations += len(ids)
-        return ids
+        with self.lock:
+            snapshot_id = store.add_snapshot(
+                self.conn, self.session_id, source=self.source,
+                region=self.region.label(), raw_text=context,
+                ocr_engine=self.provider.name)
+            ids = frequency.ingest_line(
+                self.conn, context or "".join(tokens), tokens=tokens,
+                session_id=self.session_id, snapshot_id=snapshot_id,
+                language=self.cfg.language)
+            self.conn.commit()
+            self.total_observations += len(ids)
+            return ids
 
     # ------------------------------------------------------------------ loop
     def run(self, stop_event=None, on_tick=None, max_ticks=None):
@@ -167,7 +190,19 @@ class CaptureSession:
         return self.summary()
 
     def close(self):
-        store.end_session(self.conn, self.session_id)
+        """End the sitting, recording whatever was still on screen.
+
+        Without the flush, the last thing you were reading is lost — its episode never
+        got to end. Long-lived (chrome) lines are excluded by the tracker.
+        """
+        with self.lock:
+            try:
+                leftovers = self.tracker.flush()
+                if leftovers:
+                    self._record(leftovers)
+            except Exception:
+                log.exception("flushing the final episodes")
+            store.end_session(self.conn, self.session_id)
         try:
             self.capturer.close()
         except Exception:

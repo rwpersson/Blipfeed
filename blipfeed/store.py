@@ -115,11 +115,21 @@ def _now():
 
 # --- connection + migration ---------------------------------------------------
 def connect(path=None):
-    """Open the store, set pragmas, run migrations. Returns a Row-factory conn."""
+    """Open the store, set pragmas, run migrations. Returns a Row-factory conn.
+
+    `check_same_thread=False` because the app is genuinely multi-threaded: the capture
+    loop ticks on the main thread while a hotkey-triggered manual capture records from
+    a worker (the hotkey pump must never block). sqlite3's default thread check made
+    that a hard crash that *lost the user's picked words*.
+
+    **Callers must serialize their own access** — `CaptureSession` holds a lock around
+    every connection use. Turning the check off without that would trade a loud crash
+    for silent corruption.
+    """
     path = str(path or paths.db_file())
     if path != ":memory:":
         paths.user_dir().mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

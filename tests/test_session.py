@@ -64,11 +64,14 @@ def make(conn, *, frames=None, per_call, cfg=None, writer=lambda rows: None):
         deck_writer=writer)
 
 
-def test_tick_ingests_recognized_words(conn):
-    sess = make(conn, per_call=[[line("我喜欢学习")]])
-    result = sess.tick()
-    assert not result.skipped
-    assert result.lines == 1 and result.observations > 0
+def test_tick_ingests_when_a_line_leaves_the_screen(conn):
+    """Words are recorded when an episode ENDS, not when it starts."""
+    sess = make(conn, frames=[frame(1), frame(2)],
+                per_call=[[line("我喜欢学习")], []])
+    first = sess.tick()
+    assert first.lines == 1 and first.observations == 0   # still on screen
+    second = sess.tick()                                   # gone -> recorded
+    assert second.recorded == 1 and second.observations > 0
     assert store.find_term(conn, "学习")["count"] == 1
 
 
@@ -89,28 +92,31 @@ def test_changed_frame_runs_ocr_again(conn):
     assert sess.provider.calls == 2
 
 
-def test_furniture_is_suppressed_before_counting(conn):
-    """Static chrome must never reach the store."""
+def test_persistent_chrome_never_reaches_the_store(conn):
+    """The real-session bug: chrome stays on screen, so it is never recorded."""
     nav = line("全部", x=10, y=10)
-    sess = make(conn, frames=[frame(1), frame(2)],
+    sess = make(conn, frames=[frame(i) for i in range(1, 5)],
                 per_call=[[nav, line("我喜欢学习", y=900)],
-                          [nav, line("今天天气很好", y=900)]])
-    sess.tick()
-    second = sess.tick()
-    assert second.suppressed == 1            # the nav line, dropped
-    assert store.find_term(conn, "全部")["count"] == 1   # leaked once, capped
+                          [nav, line("今天天气很好", y=900)],
+                          [nav, line("他正在看电影", y=900)],
+                          [nav, line("这个视频真好笑", y=900)]])
+    for _ in range(4):
+        sess.tick()
+    assert store.find_term(conn, "全部") is None      # zero leak, not a bounded one
+    assert store.find_term(conn, "学习") is not None  # content still recorded
 
 
 def test_tick_promotes_when_the_threshold_is_crossed(conn, monkeypatch):
     from blipfeed import dictionary
     monkeypatch.setattr(dictionary, "_INDEX", {"学习": XUEXI, "學習": XUEXI})
     written = []
-    sess = make(conn, frames=[frame(1), frame(2)],
-                per_call=[[line("我喜欢学习")], [line("学习中文")]],
+    sess = make(conn, frames=[frame(1), frame(2), frame(3)],
+                per_call=[[line("我喜欢学习")], [line("学习中文", y=900)], []],
                 writer=written.append)
-    assert sess.tick().promoted == []        # count 1 — below N=2
-    second = sess.tick()
-    assert "学习" in second.promoted         # crossed on the tick that pushed it
+    sess.tick()                              # 学习 on screen
+    sess.tick()                              # first line gone -> count 1
+    third = sess.tick()                      # second line gone -> count 2 -> carded
+    assert "学习" in third.promoted
     assert store.find_term(conn, "学习")["status"] == "carded"
     assert written                            # the deck writer ran
 
@@ -128,6 +134,15 @@ def test_tick_survives_a_failure(conn):
     result = sess.tick()
     assert result.error and "exploded" in result.error
     assert sess.tick() is not None            # still usable afterwards
+
+
+def test_close_flushes_what_was_still_on_screen(conn):
+    """Session end must not lose the thing you were reading."""
+    sess = make(conn, per_call=[[line("我喜欢学习")]])
+    sess.tick()
+    assert store.find_term(conn, "学习") is None      # episode hasn't ended
+    sess.close()
+    assert store.find_term(conn, "学习")["count"] == 1
 
 
 def test_run_stops_at_max_ticks(conn):
@@ -170,4 +185,36 @@ def test_session_counters(conn):
     sess.tick()
     sess.tick()
     assert sess.summary()["ticks"] == 2
-    assert sess.summary()["observations"] > 0
+
+
+def test_manual_recording_from_another_thread(conn):
+    """Regression: manual capture runs on a worker (the hotkey pump must not block),
+    and sqlite3's thread check turned that into a crash that LOST the user's picked
+    words. The session lock + check_same_thread=False is what makes it safe."""
+    import threading
+
+    sess = make(conn, per_call=[[line("我喜欢学习")]])
+    errors = []
+
+    def worker():
+        try:
+            for _ in range(10):
+                sess.record_manual(["万魂幡"], context="师父该入万魂幡了")
+        except Exception as exc:                # pragma: no cover - the bug
+            errors.append(repr(exc))
+
+    def ticker():
+        try:
+            for _ in range(10):
+                sess.tick()
+        except Exception as exc:                # pragma: no cover - the bug
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=worker), threading.Thread(target=ticker)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    assert errors == []
+    assert store.find_term(conn, "万魂幡")["count"] == 10

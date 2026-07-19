@@ -89,3 +89,75 @@ class FurnitureFilter:
     def tracked(self):
         """How many distinct (text, position) keys we're tracking."""
         return len(self._seen)
+
+
+class EpisodeTracker:
+    """Records a line once, when its on-screen appearance **ends**.
+
+    `FurnitureFilter` (above) counts a line on first sight and suppresses repeats.
+    A real session proved that leaks: the leak is per `(text, position)` key, **not
+    per word**, so a word appearing in two different chrome lines (Douyin's
+    "是否要打开声音？" prompt *and* its 打开声音 button) leaked one observation each,
+    reached count 2, and got carded. The invariant as originally stated was wrong.
+
+    This fixes it with a better discriminator: **chrome persists, content comes and
+    goes.** Track what is on screen; when a line disappears, that appearance episode
+    is over and gets recorded *once*. Consequences:
+
+    - Persistent chrome (nav, sidebar, watermark, "更新至第9集") never disappears while
+      you're on the page, so it is **never recorded at all** — a true zero leak, not a
+      bounded one.
+    - A subtitle shown for one snapshot is recorded once when it goes.
+    - A subtitle *held* across several snapshots is still recorded **once**, not once
+      per snapshot — the held-subtitle dedup, for free and correct.
+    - A line that outlives `max_ticks` snapshots is treated as furniture and dropped
+      even if it eventually disappears (you navigated away).
+
+    Known remaining leak: a *transient* overlay (a toast that shows once) is
+    indistinguishable from content by persistence alone, so it can still be recorded
+    once. Region targeting is the defence there — keep the capture box on the subtitle
+    band, not the whole window.
+
+    State is per session and in memory, by design.
+    """
+
+    def __init__(self, grid=DEFAULT_GRID, max_ticks=3):
+        self.grid = grid
+        self.max_ticks = max_ticks          # longer than this on screen == furniture
+        self._onscreen = {}                 # key -> [line, snapshots_seen]
+
+    def _key(self, line):
+        x, y = line.position
+        return (line.text, x // self.grid, y // self.grid)
+
+    def update(self, lines):
+        """Feed one snapshot's lines; return the lines whose episode just ended."""
+        current = {self._key(ln): ln for ln in lines}
+        ended = [entry[0] for key, entry in self._onscreen.items()
+                 if key not in current and entry[1] <= self.max_ticks]
+        merged = {}
+        for key, line in current.items():
+            prior = self._onscreen.get(key)
+            merged[key] = [line, (prior[1] if prior else 0) + 1]
+        self._onscreen = merged
+        return ended
+
+    def flush(self):
+        """End-of-session: record what's still on screen, if it looks like content."""
+        out = [entry[0] for entry in self._onscreen.values()
+               if entry[1] <= self.max_ticks]
+        self._onscreen.clear()
+        return out
+
+    @property
+    def persistent(self):
+        """On-screen lines that have outlived `max_ticks` — i.e. chrome."""
+        return sum(1 for entry in self._onscreen.values()
+                   if entry[1] > self.max_ticks)
+
+    @property
+    def onscreen(self):
+        return len(self._onscreen)
+
+    def reset(self):
+        self._onscreen.clear()

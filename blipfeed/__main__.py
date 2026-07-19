@@ -36,10 +36,10 @@ def _fmt_tick(result):
         return f"  ! tick failed: {result.error}"
     if result.skipped:
         return "  · unchanged — skipped"
-    bits = [f"{result.lines} lines"]
-    if result.suppressed:
-        bits.append(f"{result.suppressed} chrome")
-    bits.append(f"{result.observations} words")
+    bits = [f"{result.lines} on screen"]
+    if result.chrome:
+        bits.append(f"{result.chrome} chrome")
+    bits.append(f"{result.recorded} ended → {result.observations} words")
     line = "  · " + ", ".join(bits)
     if result.promoted:
         line += f"   ★ carded: {', '.join(result.promoted)}"
