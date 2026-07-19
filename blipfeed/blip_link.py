@@ -115,6 +115,14 @@ def add_cards(deck, rows, contexts_by_term=None):
     return added
 
 
+def remove_terms(deck, terms):
+    """Drop words from a deck by term. Returns the terms actually removed."""
+    wanted = set(terms)
+    before = {w.get("term") for w in deck["words"]}
+    deck["words"] = [w for w in deck["words"] if w.get("term") not in wanted]
+    return sorted(before & wanted)
+
+
 def write_deck(deck, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"schema": SCHEMA, "name": deck.get("name", "Immersion"),

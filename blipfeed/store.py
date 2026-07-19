@@ -176,6 +176,33 @@ def add_snapshot(conn, session_id, *, source=None, region=None, image_hash=None,
     return cur.lastrowid
 
 
+def term_snapshot_stats(conn, term_id):
+    """(distinct snapshots the term appeared in, snapshots since it first appeared).
+
+    Proper **document frequency**, and the two halves matter for different reasons:
+
+    * The numerator is `COUNT(DISTINCT snapshot_id)`, not the raw observation count.
+      A word appearing twice on one screen (Douyin's 当前为静音 toast *and* its button)
+      must not read as "seen twice" — that let chrome clear `min_count` from a single
+      snapshot and get carded on tick 1.
+    * The denominator counts snapshots **since the term first appeared**, not all
+      snapshots ever. Measured against all history a brand-new term is diluted by
+      sessions it couldn't have appeared in, so ubiquitous chrome looked rare
+      (抖音 scored 31% when it was really in every frame of its session).
+
+    Returns (0, 0) when no observation carries a snapshot id, meaning "can't judge".
+    """
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT snapshot_id) AS df, MIN(snapshot_id) AS first_snap "
+        "FROM observations WHERE term_id=? AND snapshot_id IS NOT NULL",
+        (term_id,)).fetchone()
+    if not row or not row["df"]:
+        return 0, 0
+    window = conn.execute("SELECT COUNT(*) FROM snapshots WHERE id >= ?",
+                          (row["first_snap"],)).fetchone()[0]
+    return row["df"], window
+
+
 def snapshot_count(conn):
     """Total snapshots ever taken — the denominator for a term's ubiquity.
 
@@ -297,6 +324,28 @@ def set_meaning(conn, term_id, meaning, note=None, ts=None):
     conn.execute(
         "UPDATE terms SET meaning=?, note=COALESCE(?, note), enriched_at=? WHERE id=?",
         (meaning, note, ts or _now(), term_id))
+
+
+def uncard(conn, term_id, status="ignored"):
+    """Undo a carding: clear the deck link and put the term back in the queue.
+
+    `status='ignored'` by default so a word you removed as junk doesn't immediately
+    re-card itself; pass 'queued' to genuinely reconsider it. Card-once is about not
+    minting duplicates, not about being irreversible.
+    """
+    if status not in STATUSES:
+        raise ValueError(f"unknown status {status!r}")
+    conn.execute("UPDATE terms SET status=?, card_deck=NULL, card_id=NULL "
+                 "WHERE id=?", (status, term_id))
+
+
+def carded_terms(conn, language=None):
+    sql = "SELECT * FROM terms WHERE status='carded'"
+    params = []
+    if language:
+        sql += " AND language=?"
+        params.append(language)
+    return conn.execute(sql + " ORDER BY count DESC", params).fetchall()
 
 
 def mark_carded(conn, term_id, deck, card_id):

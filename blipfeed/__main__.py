@@ -5,6 +5,7 @@
     python -m blipfeed --no-picker      # skip the region confirmation (scripted runs)
     python -m blipfeed --once           # a single tick, then exit (diagnostics)
     python -m blipfeed --status         # what's in the store; capture nothing
+    python -m blipfeed --clean [--yes]  # re-judge past cards against today's gate
 
 The region picker opens on **every** start, showing the saved region so you can see
 where mining will point and adjust it. Esc keeps it and proceeds.
@@ -39,7 +40,7 @@ def _fmt_tick(result):
     bits = [f"{result.lines} on screen"]
     if result.chrome:
         bits.append(f"{result.chrome} chrome")
-    bits.append(f"{result.recorded} ended → {result.observations} words")
+    bits.append(f"{result.observations} words")
     line = "  · " + ", ".join(bits)
     if result.promoted:
         line += f"   ★ carded: {', '.join(result.promoted)}"
@@ -77,6 +78,50 @@ def _resolve_region(cfg, capturer, argv):
     return region
 
 
+def _clean(conn, cfg, argv):
+    """Re-judge every carded term against the current gate; un-card the ambient ones.
+
+    The gate has been corrected twice, and a deck minted under an older, wronger
+    version keeps its mistakes. This re-runs today's rules over past decisions and
+    removes what would no longer qualify — from the store *and* the Blip deck.
+    Dry-run by default: it prints what it would do unless you pass --yes.
+    """
+    from . import blip_link, frequency
+
+    doomed = []
+    for row in store.carded_terms(conn, cfg.language):
+        df, window = store.term_snapshot_stats(conn, row["id"])
+        if not window:
+            continue
+        if df < cfg.min_count:
+            doomed.append((row, f"only {df} snapshot(s)"))
+        elif frequency.ubiquity(df, window) > cfg.max_ubiquity:
+            doomed.append((row, f"ambient — in {frequency.ubiquity(df, window):.0%} "
+                                f"of its {window} snapshots"))
+    if not doomed:
+        print("nothing to clean — every carded term still passes the gate.")
+        return 0
+
+    print(f"{len(doomed)} carded term(s) would not qualify under the current gate:")
+    for row, why in doomed:
+        print(f"  {row['term']:<8} {why}")
+    if "--yes" not in argv:
+        print("\ndry run — re-run with --yes to un-card these and remove them "
+              "from the Blip deck.")
+        return 0
+
+    path = blip_link.deck_path(cfg.blip_deck_id)
+    deck = blip_link.load_deck(path, cfg.blip_deck_id, language=cfg.language)
+    removed = blip_link.remove_terms(deck, [r["term"] for r, _ in doomed])
+    blip_link.write_deck(deck, path)
+    for row, _why in doomed:
+        store.uncard(conn, row["id"])
+    conn.commit()
+    print(f"\nun-carded {len(doomed)}; removed {len(removed)} card(s) from {path}")
+    print("Blip will reflect this on its next launch.")
+    return 0
+
+
 def _show_status(conn, cfg):
     rows = list(conn.execute(
         "SELECT status, COUNT(*) n, SUM(count) seen FROM terms GROUP BY status"))
@@ -107,6 +152,8 @@ def main(argv=None):
     conn = store.connect()
     if "--status" in argv:
         return _show_status(conn, cfg)
+    if "--clean" in argv:
+        return _clean(conn, cfg, argv)
 
     capturer = capture.Capturer()
     region = _resolve_region(cfg, capturer, argv)
@@ -135,6 +182,7 @@ def main(argv=None):
         threading.Thread(target=wrapper, daemon=True).start()
 
     def do_manual():
+        print("\n  capturing — pick your words…", flush=True)
         _in_ui_thread(lambda: _run_manual(sess), "manual capture")
 
     def do_toggle():

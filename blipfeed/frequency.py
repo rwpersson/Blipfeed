@@ -83,12 +83,12 @@ def ingest(conn, lines, *, session_id=None, snapshot_id=None, language="zh-CN",
 
 
 # --------------------------------- promotion ---------------------------------
-def ubiquity(row, snapshots):
-    """Fraction of all snapshots this term appeared in. 0 when we have no samples."""
-    return (row["count"] / snapshots) if snapshots else 0.0
+def ubiquity(df, window):
+    """Fraction of the term's lifetime snapshots it appeared in. 0 == can't judge."""
+    return (df / window) if window else 0.0
 
 
-def is_promotable(row, cfg, snapshots=0):
+def is_promotable(conn, row, cfg):
     """The per-term half of the gate (the bucket handles status/meaning/count).
 
     **Frequency is a band, not a floor.** Too rare (< N) is probably OCR noise; too
@@ -106,17 +106,23 @@ def is_promotable(row, cfg, snapshots=0):
     conf = row["ocr_conf_max"]
     if conf is not None and conf < cfg.min_confidence:
         return False
+
+    df, window = store.term_snapshot_stats(conn, row["id"])
+    if not window:
+        return True                      # no snapshot data (direct ingestion) — can't judge
+
+    # "Seen more than once" must mean more than one *snapshot*. Counting raw
+    # observations let a word appearing twice on a single screen (a toast and its
+    # button) clear the gate from one frame and get carded on tick 1.
+    if df < cfg.min_count:
+        return False
+
     # No warm-up exemption. An earlier version skipped this check until N snapshots
-    # existed, so that chrome — which hits count>=2 on the *second* snapshot, being in
-    # every frame — sailed through the window and got carded. The guard defeated the
-    # thing it guarded.
-    #
-    # The warm-up is emergent instead: with min_count=2 and max_ubiquity=0.35, a term
-    # can't qualify until ~6 snapshots exist, because before that everything looks
-    # ubiquitous — which is the honest answer, not a special case.
-    # (snapshots==0 means nothing has been captured, e.g. direct ingestion in tests;
-    # there's no ratio to judge, so don't.)
-    if snapshots and ubiquity(row, snapshots) > cfg.get("max_ubiquity", 1.0):
+    # existed, and chrome — in every frame, so it qualifies immediately — sailed
+    # straight through that window. The warm-up is emergent instead: a term's first
+    # snapshot gives 1/1 = 100%, so nothing can card until its sightings have thinned
+    # out relative to how long it has been around.
+    if ubiquity(df, window) > cfg.get("max_ubiquity", 1.0):
         return False
     return True
 
@@ -134,11 +140,18 @@ def select_for_promotion(conn, cfg):
     """
     if not cfg.auto_card:
         return []
+    # bucket() is a cheap index-backed pre-filter on the denormalized raw count; the
+    # precise per-snapshot gate below is exact but costs a query, so evaluate lazily
+    # and stop as soon as we have K.
     candidates = store.bucket(conn, "ready", language=cfg.language,
                               min_count=cfg.min_count)
-    snapshots = store.snapshot_count(conn)
-    eligible = [r for r in candidates if is_promotable(r, cfg, snapshots)]
-    return eligible[:cfg.max_promotions_per_snapshot]
+    chosen = []
+    for row in candidates:
+        if is_promotable(conn, row, cfg):
+            chosen.append(row)
+            if len(chosen) >= cfg.max_promotions_per_snapshot:
+                break
+    return chosen
 
 
 def promote(conn, cfg, deck_writer=None):

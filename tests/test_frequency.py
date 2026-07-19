@@ -149,66 +149,77 @@ def test_promote_writes_before_carding(conn):
 
 
 # ------------------------------ the ubiquity ceiling -------------------------
-def _snapshots(conn, n, session_id=None):
-    """Fake n snapshots so ubiquity has a denominator."""
-    sid = session_id or store.start_session(conn, "s")
-    for _ in range(n):
-        store.add_snapshot(conn, sid, source="r")
-    return sid
+def tick(conn, sid, texts, idx=None):
+    """One realistic snapshot: lines recorded against a real snapshot id, which is
+    what document frequency is measured over."""
+    snap = store.add_snapshot(conn, sid, source="r")
+    frequency.ingest(conn, [line(t) for t in texts], session_id=sid,
+                     snapshot_id=snap, idx=idx or IDX)
+    return snap
 
 
-def test_ubiquitous_term_is_not_auto_carded(conn):
-    """The real-session bug, stated as a rule: a word present in most snapshots is
-    ambient (UI, or something you already know) and must not auto-card."""
-    sid = _snapshots(conn, 20)
-    for _ in range(18):                     # 18/20 snapshots = 90% ubiquity
-        frequency.ingest(conn, [line("打开")], session_id=sid,
-                         idx={"打开": Entry("打开", "打開", "da3 kai1", ("to open",))})
+OPEN = Entry("打开", "打開", "da3 kai1", ("to open",))
+MOVIE = Entry("电影", "電影", "dian4 ying3", ("movie",))
+IDX2 = {**IDX, "打开": OPEN, "电影": MOVIE}
+
+
+def test_a_word_twice_on_one_screen_is_not_seen_twice(conn):
+    """The tick-1 bug: 当前为静音 + its 打开声音 button put the word on screen twice,
+    which cleared min_count from a SINGLE snapshot and carded chrome immediately."""
+    sid = store.start_session(conn, "s")
+    tick(conn, sid, ["请打开声音", "打开"], idx=IDX2)      # count 2, but one snapshot
+    assert store.find_term(conn, "打开")["count"] == 2
     assert frequency.select_for_promotion(conn, cfg()) == []
-    # ...but it is NOT discarded: still recorded, still visible, still cardable by hand
-    assert store.find_term(conn, "打开")["count"] == 18
-    assert [r["term"] for r in store.bucket(conn, "ready", min_count=2)] == ["打开"]
 
 
-def test_normal_term_is_carded_alongside_a_ubiquitous_one(conn):
-    """Your case: skip the ambient word, pick a different one from the same screen."""
-    idx = {"打开": Entry("打开", "打開", "da3 kai1", ("to open",)), **IDX}
-    sid = _snapshots(conn, 20)
-    for _ in range(18):
-        frequency.ingest(conn, [line("打开")], session_id=sid, idx=idx)
-    for _ in range(3):
-        frequency.ingest(conn, [line("学习")], session_id=sid, idx=idx)
+def test_chrome_in_every_snapshot_is_never_carded(conn):
+    """Ubiquity is measured since the term first appeared, so chrome sits at 100%."""
+    sid = store.start_session(conn, "s")
+    for sub in ["我喜欢学习", "今天天气好", "外面下雨了", "他正在看书",
+                "明天见面吧", "音乐真好听", "我们去公园", "这个很有趣"]:
+        tick(conn, sid, ["请打开声音", sub], idx=IDX2)     # chrome + varying content
+    chrome = store.find_term(conn, "打开")
+    df, window = store.term_snapshot_stats(conn, chrome["id"])
+    assert df == window                                    # in every snapshot: 100%
+    assert "打开" not in [r["term"] for r in frequency.select_for_promotion(conn, cfg())]
+
+
+def test_content_is_carded_alongside_chrome(conn):
+    """Your case: skip the ambient word, pick a real one from the same screen."""
+    sid = store.start_session(conn, "s")
+    subs = ["我喜欢学习", "今天天气好", "外面下雨了", "他正在看书",
+            "明天见面吧", "音乐真好听", "学习中文", "这个很有趣"]
+    for sub in subs:
+        tick(conn, sid, ["请打开声音", sub], idx=IDX2)
     picked = [r["term"] for r in frequency.select_for_promotion(conn, cfg())]
-    assert picked == ["学习"]               # ambient skipped, real word chosen
+    assert "学习" in picked and "打开" not in picked
 
 
-def test_ubiquity_is_a_ratio_not_a_raw_count(conn):
-    """A long session must not block a genuinely useful word just for accumulating."""
-    idx = {"电影": Entry("电影", "電影", "dian4 ying3", ("movie",))}
-    sid = _snapshots(conn, 400)             # a long sitting
-    for _ in range(30):                     # 30 sightings, but only 7.5% ubiquity
-        frequency.ingest(conn, [line("电影")], session_id=sid, idx=idx)
-    assert [r["term"] for r in frequency.select_for_promotion(conn, cfg())] == ["电影"]
-
-
-def test_nothing_cards_until_there_are_enough_snapshots_to_judge(conn):
-    """Early on everything looks ubiquitous, so nothing qualifies — the warm-up is
-    emergent from the ratio, not a special case. An earlier version exempted the first
-    N snapshots and chrome sailed straight through that window and got carded."""
-    sid = _snapshots(conn, 2)
-    for _ in range(2):
-        frequency.ingest(conn, [line("学习")], session_id=sid, idx=IDX)
-    assert frequency.select_for_promotion(conn, cfg()) == []      # 2/2 = 100%
-
-    for _ in range(10):                     # more snapshots -> the ratio drops
+def test_a_new_term_cannot_card_on_its_first_snapshot(conn):
+    """1 snapshot out of 1 since first seen = 100% — nothing qualifies immediately,
+    however much older history exists in the store."""
+    sid = store.start_session(conn, "s")
+    for _ in range(20):                       # plenty of unrelated history
         store.add_snapshot(conn, sid, source="r")
-    assert [r["term"] for r in frequency.select_for_promotion(conn, cfg())] == ["学习"]
+    tick(conn, sid, ["请打开声音", "打开"], idx=IDX2)
+    assert frequency.select_for_promotion(conn, cfg()) == []
+
+
+def test_ubiquity_is_a_ratio_so_long_sessions_still_card(conn):
+    """A useful word must not be blocked just for accumulating over a long sitting."""
+    sid = store.start_session(conn, "s")
+    for i in range(40):
+        texts = ["请打开声音"] + (["他在看电影"] if i % 8 == 0 else ["今天天气好"])
+        tick(conn, sid, texts, idx=IDX2)
+    picked = [r["term"] for r in frequency.select_for_promotion(conn, cfg())]
+    assert "电影" in picked                    # 5 sightings, but only ~12% ubiquity
 
 
 def test_ubiquity_threshold_is_configurable(conn):
-    idx = {"东西": Entry("东西", "東西", "dong1 xi5", ("thing",))}
-    sid = _snapshots(conn, 20)
-    for _ in range(8):                      # 40% ubiquity
-        frequency.ingest(conn, [line("东西")], session_id=sid, idx=idx)
-    assert frequency.select_for_promotion(conn, cfg(max_ubiquity=0.35)) == []
-    assert frequency.select_for_promotion(conn, cfg(max_ubiquity=0.90)) != []
+    sid = store.start_session(conn, "s")
+    for i in range(10):
+        tick(conn, sid, ["他在看电影"] if i % 2 == 0 else ["今天天气好"], idx=IDX2)
+    assert "电影" not in [r["term"] for r in
+                          frequency.select_for_promotion(conn, cfg(max_ubiquity=0.35))]
+    assert "电影" in [r["term"] for r in
+                      frequency.select_for_promotion(conn, cfg(max_ubiquity=0.90))]
