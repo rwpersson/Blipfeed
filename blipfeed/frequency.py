@@ -31,6 +31,8 @@ Everything rejected stays in the queue — visible, never discarded.
 `auto_card=False` disables promotion entirely: nothing cards without the user, and
 the review queue becomes the only path. That's a legitimate way to run the app.
 """
+from dataclasses import dataclass
+
 from . import dictionary, hanzi, lang, segment, store
 from .logging_setup import get
 
@@ -152,6 +154,86 @@ def select_for_promotion(conn, cfg):
             if len(chosen) >= cfg.max_promotions_per_snapshot:
                 break
     return chosen
+
+
+# ------------------------------- the review queue ----------------------------
+@dataclass(frozen=True)
+class Candidate:
+    """One row of the review queue, classified so a UI can lead with what matters.
+
+    `tier` is 'primary' when the term could actually be carded, and 'secondary'
+    otherwise — with `reasons` saying why, in words fit to show the user. Secondary
+    candidates are **collapsed, never hidden**: they stay fully interactive, because
+    "ambient" and "single character" are judgements the user is entitled to overrule.
+    """
+    row: object
+    df: int
+    window: int
+    ubiquity: float
+    tier: str
+    reasons: tuple
+
+    @property
+    def term(self):
+        return self.row["term"]
+
+    @property
+    def count(self):
+        return self.row["count"]
+
+    @property
+    def meaning(self):
+        return self.row["meaning"]
+
+    @property
+    def reading(self):
+        return self.row["reading"]
+
+
+def classify(row, cfg, df=0, window=0):
+    """(tier, reasons) for a candidate — the queue's view of the promotion gate.
+
+    Deliberately mirrors `is_promotable` check for check. If they drift, the review
+    list stops predicting what will card, which is the one thing it's for.
+    """
+    reasons = []
+    if len(row["term"]) < cfg.min_promote_length:
+        reasons.append("single character" if cfg.min_promote_length == 2
+                       else f"shorter than {cfg.min_promote_length} characters")
+    conf = row["ocr_conf_max"]
+    if conf is not None and conf < cfg.min_confidence:
+        reasons.append(f"low OCR confidence ({conf:.0%})")
+    if window:
+        if df < cfg.min_count:
+            reasons.append(f"seen in only {df} snapshot"
+                           f"{'s' if df != 1 else ''}")
+        elif ubiquity(df, window) > cfg.get("max_ubiquity", 1.0):
+            reasons.append(f"ambient — in {ubiquity(df, window):.0%} of the "
+                           f"{window} snapshots since it first appeared")
+    return ("secondary" if reasons else "primary"), tuple(reasons)
+
+
+def review_queue(conn, cfg, which="ready", limit=None, tier=None):
+    """Candidates for review, **useful ones first**.
+
+    The raw `store.bucket()` ranks by count alone, which on real content puts the
+    ambient junk (集/讲/第/日/月) at the very top and buries anything worth learning.
+    This orders by tier first, then frequency, so the queue opens on words that can
+    actually become cards.
+
+    `tier='primary'`/`'secondary'` fetches one group; omit it for everything.
+    """
+    rows = store.bucket(conn, which, language=cfg.language, min_count=1)
+    stats = store.term_snapshot_stats_bulk(conn, [r["id"] for r in rows])
+    out = []
+    for row in rows:
+        df, window = stats.get(row["id"], (0, 0))
+        kind, reasons = classify(row, cfg, df, window)
+        out.append(Candidate(row, df, window, ubiquity(df, window), kind, reasons))
+    out.sort(key=lambda c: (c.tier != "primary", -c.count, c.term))
+    if tier:
+        out = [c for c in out if c.tier == tier]
+    return out[:limit] if limit else out
 
 
 def promote(conn, cfg, deck_writer=None):

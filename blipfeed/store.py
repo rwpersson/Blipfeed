@@ -203,15 +203,35 @@ def term_snapshot_stats(conn, term_id):
     return row["df"], window
 
 
-def snapshot_count(conn):
-    """Total snapshots ever taken — the denominator for a term's ubiquity.
+def term_snapshot_stats_bulk(conn, term_ids):
+    """{term_id: (df, window)} for many terms in two queries instead of 2N.
 
-    A term appearing in most snapshots is ambient (UI chrome, or a word so common the
-    user already knows it). Using a ratio rather than a raw count is what keeps that
-    judgement stable across a 5-minute and a 3-hour session.
+    The review queue classifies every candidate, so the per-term version would mean
+    hundreds of round-trips to draw one list. Snapshot ids are fetched once and
+    bisected, which is exact even if snapshots are ever pruned (unlike arithmetic on
+    id ranges).
     """
-    row = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()
-    return row[0] if row else 0
+    ids = list(term_ids)
+    if not ids:
+        return {}
+    from bisect import bisect_left
+
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT term_id, COUNT(DISTINCT snapshot_id) AS df, "
+        f"MIN(snapshot_id) AS first_snap FROM observations "
+        f"WHERE snapshot_id IS NOT NULL AND term_id IN ({placeholders}) "
+        f"GROUP BY term_id", ids).fetchall()
+    snapshot_ids = [r[0] for r in
+                    conn.execute("SELECT id FROM snapshots ORDER BY id")]
+    total = len(snapshot_ids)
+    out = {}
+    for r in rows:
+        if not r["df"]:
+            continue
+        window = total - bisect_left(snapshot_ids, r["first_snap"])
+        out[r["term_id"]] = (r["df"], window)
+    return out
 
 
 def last_snapshot_hash(conn, session_id, source=None):

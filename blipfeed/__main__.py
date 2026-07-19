@@ -4,7 +4,7 @@
     python -m blipfeed --manual         # MANUAL: hotkey grabs a frame, you pick chips
     python -m blipfeed --no-picker      # skip the region confirmation (scripted runs)
     python -m blipfeed --once           # a single tick, then exit (diagnostics)
-    python -m blipfeed --status         # what's in the store; capture nothing
+    python -m blipfeed --status [--all] # what's in the store; capture nothing
     python -m blipfeed --clean [--yes]  # re-judge past cards against today's gate
 
 The region picker opens on **every** start, showing the saved region so you can see
@@ -122,7 +122,7 @@ def _clean(conn, cfg, argv):
     return 0
 
 
-def _show_status(conn, cfg):
+def _show_status(conn, cfg, argv=()):
     rows = list(conn.execute(
         "SELECT status, COUNT(*) n, SUM(count) seen FROM terms GROUP BY status"))
     if not rows:
@@ -131,10 +131,30 @@ def _show_status(conn, cfg):
     print("terms by status:")
     for r in rows:
         print(f"  {r['status']:<10} {r['n']:>5} terms  ({r['seen']} sightings)")
+    from . import frequency
+
+    verbose = "--all" in argv
     for which, label in (("needs_def", "Needs a definition"), ("ready", "Ready")):
-        top = store.bucket(conn, which, min_count=cfg.min_count, limit=8)
-        shown = ", ".join(f"{r['term']}({r['count']})" for r in top) or "—"
-        print(f"\n{label} (top): {shown}")
+        queue = frequency.review_queue(conn, cfg, which)
+        primary = [c for c in queue if c.tier == "primary"]
+        secondary = [c for c in queue if c.tier == "secondary"]
+
+        print(f"\n{label} — {len(primary)} worth a look:")
+        for c in primary[:10]:
+            gloss = (c.meaning or "")[:38]
+            print(f"   {c.term:<8} seen {c.count:<4} {gloss}")
+        if not primary:
+            print("   —")
+
+        # Collapsed, never hidden: 'ambient' and 'single character' are judgements
+        # the user is entitled to overrule, so they stay listable and actionable.
+        if secondary:
+            print(f"   … plus {len(secondary)} filtered out "
+                  f"({'--all to list' if not verbose else 'shown below'})")
+            if verbose:
+                for c in secondary[:20]:
+                    print(f"     {c.term:<8} seen {c.count:<4} "
+                          f"— {'; '.join(c.reasons)}")
     return 0
 
 
@@ -151,7 +171,7 @@ def main(argv=None):
 
     conn = store.connect()
     if "--status" in argv:
-        return _show_status(conn, cfg)
+        return _show_status(conn, cfg, argv)
     if "--clean" in argv:
         return _clean(conn, cfg, argv)
 

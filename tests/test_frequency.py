@@ -160,7 +160,8 @@ def tick(conn, sid, texts, idx=None):
 
 OPEN = Entry("打开", "打開", "da3 kai1", ("to open",))
 MOVIE = Entry("电影", "電影", "dian4 ying3", ("movie",))
-IDX2 = {**IDX, "打开": OPEN, "电影": MOVIE}
+EPISODE = Entry("集", "集", "ji2", ("episode; volume",))
+IDX2 = {**IDX, "打开": OPEN, "电影": MOVIE, "集": EPISODE}
 
 
 def test_a_word_twice_on_one_screen_is_not_seen_twice(conn):
@@ -223,3 +224,61 @@ def test_ubiquity_threshold_is_configurable(conn):
                           frequency.select_for_promotion(conn, cfg(max_ubiquity=0.35))]
     assert "电影" in [r["term"] for r in
                       frequency.select_for_promotion(conn, cfg(max_ubiquity=0.90))]
+
+
+# ------------------------------- the review queue ----------------------------
+def test_queue_leads_with_useful_candidates(conn):
+    """store.bucket() ranks by raw count, which puts ambient junk (集/讲/第) on top
+    and buries anything learnable. The queue must invert that."""
+    sid = store.start_session(conn, "s")
+    subs = ["我喜欢学习", "今天天气好", "外面下雨了", "他正在看书",
+            "明天见面吧", "音乐真好听", "学习中文", "这个很有趣"]
+    for sub in subs:
+        tick(conn, sid, ["第9集", sub], idx=IDX2)     # ambient chrome + content
+
+    queue = frequency.review_queue(conn, cfg(), "ready")
+    primary = [c.term for c in queue if c.tier == "primary"]
+    assert "学习" in primary
+    assert queue[0].tier == "primary"                  # useful first, not 集
+    assert all(c.tier == "primary" for c in queue[:len(primary)])
+
+
+def test_queue_classifies_and_explains(conn):
+    sid = store.start_session(conn, "s")
+    for i in range(8):
+        # "集" alone so the token is deterministic — jieba keeps "第9集" whole.
+        tick(conn, sid, ["集", "我喜欢学习" if i < 2 else "今天天气好"], idx=IDX2)
+    by_term = {c.term: c for c in frequency.review_queue(conn, cfg(), "ready")}
+
+    assert by_term["集"].tier == "secondary"
+    assert any("single character" in r for r in by_term["集"].reasons)
+    assert by_term["学习"].tier == "primary" and by_term["学习"].reasons == ()
+
+
+def test_secondary_candidates_are_collapsed_not_hidden(conn):
+    """'ambient' and 'single character' are judgements the user may overrule, so
+    they stay listable and actionable."""
+    sid = store.start_session(conn, "s")
+    for _ in range(8):
+        tick(conn, sid, ["集"], idx=IDX2)
+    secondary = frequency.review_queue(conn, cfg(), "ready", tier="secondary")
+    assert [c.term for c in secondary]                 # retrievable
+    assert all(c.reasons for c in secondary)           # each says why
+
+
+def test_queue_primary_tier_mirrors_the_gate(conn):
+    """The queue's whole job is predicting what will card. If classify() and
+    is_promotable() drift, the list stops meaning anything."""
+    sid = store.start_session(conn, "s")
+    subs = ["我喜欢学习", "今天天气好", "他在看电影", "外面下雨了",
+            "学习中文", "音乐真好听", "他在看电影", "明天见面吧"]
+    for sub in subs:
+        tick(conn, sid, ["第9集", sub], idx=IDX2)
+
+    for c in frequency.review_queue(conn, cfg(), "ready"):
+        expected = frequency.is_promotable(conn, c.row, cfg())
+        assert (c.tier == "primary") == expected, f"{c.term}: {c.reasons}"
+
+
+def test_queue_handles_an_empty_store(conn):
+    assert frequency.review_queue(conn, cfg(), "ready") == []
