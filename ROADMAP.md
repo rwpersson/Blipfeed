@@ -158,7 +158,7 @@ compositional miss 很多 — quarantined from carding, none discarded.
 **End of Phase 4 = the app works end to end**: run it over a video, get an immersion
 deck of the words you saw, review them in Blip. Everything after is quality.
 
-## Phase 5 — The mining queue + enrichment (review UI) ◐ IN PROGRESS ★
+## Phase 5 — The mining queue + enrichment (review UI) ☑ DONE ★
 
 Where the user tunes what the automation did — and where the high-value slang words
 live. A set of *views* over `terms`, not a new store. This is arguably the primary
@@ -184,9 +184,9 @@ against a list that is already worth looking at):**
   word-list import (scales to thousands, one transaction), and `forget` to undo.
 - ☑ `--status [--all]`, `--clean [--yes]`, `--known-sync|import|forget`.
 
-**Next up:**
+**The window:**
 
-- ☐ `ui/review.py` (`python -m blipfeed.review`) — two prominent buckets + a
+- ☑ `ui/review.py` (`python -m blipfeed.review`) — two prominent buckets + a
   collapsed tail (see CLAUDE.md data model):
   - **Needs a definition** (loudest): `meaning IS NULL ∧ count≥N` — the slang/nuance
     list, ranked by frequency, each row already carrying reading (pypinyin) + mined
@@ -194,10 +194,10 @@ against a list that is already worth looking at):**
   - **Ready to card**: `meaning IS NOT NULL ∧ count≥N` — CEDICT filled the meaning;
     one-click accept (or auto-carded if `auto_card` is on).
   - **Long tail**: `count<N`, hidden by default (one-offs + OCR noise).
-- ☐ Actions: **accept → card**, **ignore**, **mark known**, **edit** meaning/note.
+- ☑ Actions: **card**, **ignore**, **mark known**, **save meaning/note**, each on single-key shortcuts (c/i/k/s) that stand down while a field has focus; the selection advances after an action so a queue is reviewed by holding a key.
   Each just sets `status` / fields. A term becomes cardable the moment it has a
   `meaning`.
-- ☐ **The manual-AI enrichment loop** (CLAUDE.md Enrichment; the only AI path, free):
+- ☑ **The manual-AI enrichment loop** (CLAUDE.md Enrichment; the only AI path, free):
   - **"Copy for AI"** — export the *Needs a definition* batch as text, each row
     `term · reading · freq · 1–3 context sentences` — everything a chat model needs
     to define slang *in context*.
@@ -205,7 +205,7 @@ against a list that is already worth looking at):**
     `meaning`/`note` and moves the term to *Ready to card*.
 - ☐ Knob controls: N (eligibility threshold), K (per-snapshot cap), and `auto_card`
   on/off (off = nothing cards without you; everything routes to review) — persisted.
-- ☐ A **known-words import** so you don't get carded for words you already know:
+- ☑ A **known-words import** so you don't get carded for words you already know:
   seed `status=known` from an HSK level, a word list, or Blip's graduated words
   (`state.json`).
 
