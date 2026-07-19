@@ -53,7 +53,15 @@ DEFAULTS = {
     "min_confidence": 0.50,             # OCR confidence floor for promotion
 
     # promotion policy (the gate)
-    "min_count": 2,                     # N: sightings before a term is eligible
+    "min_count": 2,                     # N: distinct snapshots before an UNVERIFIED
+                                        # term is eligible (guards OCR garbage)
+    "min_count_verified": 1,            # ...but a CC-CEDICT hit, or a term you
+                                        # defined yourself, is very unlikely to be
+                                        # garbage, so one clear sighting is enough.
+                                        # At 30s sampling a real word rarely recurs
+                                        # across snapshots while chrome always does,
+                                        # so requiring 2 of everything mostly blocked
+                                        # real vocabulary. Ubiquity still applies.
     "max_ubiquity": 0.35,               # skip terms appearing in >35% of ALL snapshots
                                         # — ambient UI, or a word you already know.
                                         # A ratio, not a count, so it survives long
@@ -80,6 +88,7 @@ _RANGES = {
     "interval_seconds": (5, 120),
     "furniture_threshold": (1, 20),
     "min_count": (1, 50),
+    "min_count_verified": (1, 50),
     "max_promotions_per_snapshot": (1, 50),
     "min_promote_length": (1, 10),
     "min_confidence": (0.0, 1.0),

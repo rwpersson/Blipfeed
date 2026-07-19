@@ -93,7 +93,7 @@ def _clean(conn, cfg, argv):
         df, window = store.term_snapshot_stats(conn, row["id"])
         if not window:
             continue
-        if df < cfg.min_count:
+        if df < frequency.required_snapshots(row, cfg):
             doomed.append((row, f"only {df} snapshot(s)"))
         elif frequency.ubiquity(df, window) > cfg.max_ubiquity:
             doomed.append((row, f"ambient — in {frequency.ubiquity(df, window):.0%} "

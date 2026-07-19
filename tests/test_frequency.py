@@ -68,10 +68,14 @@ def test_ingest_explicit_tokens_for_manual_mode(conn):
 
 
 # --------------------------------- the gate ----------------------------------
-def test_promotion_requires_min_count(conn):
-    frequency.ingest(conn, [line("学习")], idx=IDX)
-    assert frequency.select_for_promotion(conn, cfg()) == []      # count 1 < N=2
-    frequency.ingest(conn, [line("学习")], idx=IDX)
+def test_ingestion_without_snapshots_cannot_be_judged(conn):
+    """Observations carrying no snapshot id (direct ingestion — an import, or a test)
+    yield no document frequency, so the ratio gate has nothing to measure. Such terms
+    are allowed through rather than blocked on missing data; real capture always
+    supplies a snapshot id, so this is the degenerate path, not the normal one."""
+    frequency.ingest(conn, [line("学习")], idx=IDX)               # no snapshot_id
+    row = store.find_term(conn, "学习")
+    assert store.term_snapshot_stats(conn, row["id"]) == (0, 0)
     assert [r["term"] for r in frequency.select_for_promotion(conn, cfg())] == ["学习"]
 
 
@@ -282,3 +286,56 @@ def test_queue_primary_tier_mirrors_the_gate(conn):
 
 def test_queue_handles_an_empty_store(conn):
     assert frequency.review_queue(conn, cfg(), "ready") == []
+
+
+# --------------------- dictionary-verified single sightings ------------------
+def test_a_dictionary_hit_can_card_from_one_snapshot(conn):
+    """At 30s sampling a real word rarely recurs, while chrome always does. Requiring
+    two of everything blocked genuine vocabulary, so a CEDICT hit needs only one."""
+    sid = store.start_session(conn, "s")
+    tick(conn, sid, ["我喜欢学习"], idx=IDX2)          # 学习 seen once
+    for _ in range(4):                                # let the window grow
+        tick(conn, sid, ["今天天气好"], idx=IDX2)
+    assert "学习" in [r["term"] for r in frequency.select_for_promotion(conn, cfg())]
+
+
+def test_an_unverified_term_still_needs_to_recur(conn):
+    """OCR garbage (硅菌, 乐内) is exactly what a single sighting can't distinguish,
+    so a dictionary miss keeps the stricter bar."""
+    sid = store.start_session(conn, "s")
+    tick(conn, sid, ["硅菌"], idx=IDX2)               # not in the dictionary
+    for _ in range(4):
+        tick(conn, sid, ["今天天气好"], idx=IDX2)
+    row = store.find_term(conn, "硅菌")
+    assert row["dict_ok"] == 0
+    assert frequency.required_snapshots(row, cfg()) == 2
+    assert "硅菌" not in [c.term for c in
+                          frequency.review_queue(conn, cfg(), "needs_def",
+                                                 tier="primary")]
+
+
+def test_user_enrichment_counts_as_verification(conn):
+    """Defining a slang word by hand vouches for it more than any dictionary."""
+    sid = store.start_session(conn, "s")
+    tick(conn, sid, ["师父该入万魂幡了"], idx=IDX2)
+    row = store.find_term(conn, "万魂")
+    assert frequency.required_snapshots(row, cfg()) == 2      # unverified
+    store.set_meaning(conn, row["id"], "soul banner")         # user defines it
+    assert frequency.required_snapshots(store.get_term(conn, row["id"]), cfg()) == 1
+
+
+def test_single_sighting_still_obeys_ubiquity(conn):
+    """A word seen once has ubiquity 1/window, so it can't card the instant it
+    appears — the window has to grow first. Chrome never gets there."""
+    sid = store.start_session(conn, "s")
+    tick(conn, sid, ["我喜欢学习"], idx=IDX2)
+    assert frequency.select_for_promotion(conn, cfg()) == []   # 1/1 = 100%
+
+
+def test_verified_threshold_is_configurable(conn):
+    sid = store.start_session(conn, "s")
+    tick(conn, sid, ["我喜欢学习"], idx=IDX2)
+    for _ in range(4):
+        tick(conn, sid, ["今天天气好"], idx=IDX2)
+    assert frequency.select_for_promotion(conn, cfg(min_count_verified=2)) == []
+    assert frequency.select_for_promotion(conn, cfg(min_count_verified=1)) != []

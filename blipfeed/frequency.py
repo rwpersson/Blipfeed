@@ -90,6 +90,28 @@ def ubiquity(df, window):
     return (df / window) if window else 0.0
 
 
+def is_verified(row):
+    """Do we have independent evidence this is a real word?
+
+    A CC-CEDICT headword, or a term the user personally supplied a meaning for — the
+    latter counts for more than any dictionary, since they vouched for it by hand.
+    """
+    return bool(row["dict_ok"]) or bool(row["enriched_at"])
+
+
+def required_snapshots(row, cfg):
+    """How many distinct snapshots this term needs before it may card.
+
+    Requiring two of *everything* was blocking real vocabulary: at 30s sampling we see
+    a small fraction of the lines in a video, so a genuine word rarely gets caught
+    twice — while chrome is in every single frame and always clears the bar. The
+    corroboration a second sighting provides is only really needed for terms nothing
+    else vouches for; a dictionary hit already has that evidence.
+    """
+    return (cfg.get("min_count_verified", 1) if is_verified(row)
+            else cfg.min_count)
+
+
 def is_promotable(conn, row, cfg):
     """The per-term half of the gate (the bucket handles status/meaning/count).
 
@@ -116,7 +138,8 @@ def is_promotable(conn, row, cfg):
     # "Seen more than once" must mean more than one *snapshot*. Counting raw
     # observations let a word appearing twice on a single screen (a toast and its
     # button) clear the gate from one frame and get carded on tick 1.
-    if df < cfg.min_count:
+    # How many snapshots are needed depends on whether anything vouches for the term.
+    if df < required_snapshots(row, cfg):
         return False
 
     # No warm-up exemption. An earlier version skipped this check until N snapshots
@@ -145,8 +168,13 @@ def select_for_promotion(conn, cfg):
     # bucket() is a cheap index-backed pre-filter on the denormalized raw count; the
     # precise per-snapshot gate below is exact but costs a query, so evaluate lazily
     # and stop as soon as we have K.
+    #
+    # The pre-filter must use the LOWEST bar any term could face, or it silently
+    # excludes rows the real gate would accept — passing cfg.min_count here dropped
+    # every dictionary-verified single sighting before it was ever judged.
+    floor = min(cfg.min_count, cfg.get("min_count_verified", cfg.min_count))
     candidates = store.bucket(conn, "ready", language=cfg.language,
-                              min_count=cfg.min_count)
+                              min_count=floor)
     chosen = []
     for row in candidates:
         if is_promotable(conn, row, cfg):
@@ -204,9 +232,12 @@ def classify(row, cfg, df=0, window=0):
     if conf is not None and conf < cfg.min_confidence:
         reasons.append(f"low OCR confidence ({conf:.0%})")
     if window:
-        if df < cfg.min_count:
+        need = required_snapshots(row, cfg)
+        if df < need:
+            why = ("" if is_verified(row)
+                   else " — not in the dictionary, so it needs to recur")
             reasons.append(f"seen in only {df} snapshot"
-                           f"{'s' if df != 1 else ''}")
+                           f"{'s' if df != 1 else ''} (needs {need}){why}")
         elif ubiquity(df, window) > cfg.get("max_ubiquity", 1.0):
             reasons.append(f"ambient — in {ubiquity(df, window):.0%} of the "
                            f"{window} snapshots since it first appeared")
