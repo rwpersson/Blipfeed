@@ -158,13 +158,33 @@ compositional miss 很多 — quarantined from carding, none discarded.
 **End of Phase 4 = the app works end to end**: run it over a video, get an immersion
 deck of the words you saw, review them in Blip. Everything after is quality.
 
-## Phase 5 — The mining queue + enrichment (review UI) ★ ☐
+## Phase 5 — The mining queue + enrichment (review UI) ◐ IN PROGRESS ★
 
 Where the user tunes what the automation did — and where the high-value slang words
 live. A set of *views* over `terms`, not a new store. This is arguably the primary
 surface, not an afterthought: on real content the words worth learning are
 disproportionately the CEDICT-misses (万魂幡, 婚姻危机, 凡人歌 — verified), and this is
 where they surface.
+
+**Done so far (engine side — deliberately before any UI, so the window gets built
+against a list that is already worth looking at):**
+
+- ☑ `frequency.review_queue()` — tiered candidates. `primary` = could actually card;
+  `secondary` = ambient / single-character / too-few-snapshots / low-confidence, each
+  with a plain-English reason. Secondary is **collapsed, never hidden** — those are
+  judgements the user may overrule, so they stay listable and actionable
+  (`tier='secondary'`, or `--status --all`). Tested property: the primary tier mirrors
+  `is_promotable()` check for check, or the list stops predicting what will card.
+- ☑ Dictionary-verified terms card from **one** snapshot (`min_count_verified`),
+  unverified ones still need two. At 30s sampling a real word rarely recurs while
+  chrome always does, so requiring two of everything blocked real vocabulary. Took the
+  author's queue from 0 useful candidates to 19 real words.
+- ☑ `known.py` — known words. **No data = beginner = everything surfaces**, the honest
+  default; sources are Blip decks (495 terms for the author), Blip graduated (139),
+  word-list import (scales to thousands, one transaction), and `forget` to undo.
+- ☑ `--status [--all]`, `--clean [--yes]`, `--known-sync|import|forget`.
+
+**Next up:**
 
 - ☐ `ui/review.py` (`python -m blipfeed.review`) — two prominent buckets + a
   collapsed tail (see CLAUDE.md data model):
