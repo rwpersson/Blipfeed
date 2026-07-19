@@ -66,6 +66,7 @@ class CaptureSession:
         # persistent chrome is never recorded at all); MANUAL mode keeps the
         # immediate FurnitureFilter, because a chip picker can't wait for an episode
         # to finish — it has to de-clutter the frame right now.
+        self.count_mode = cfg.get("count_mode", "sightings")
         self.tracker = tracker if tracker is not None else furniture.EpisodeTracker(
             max_ticks=cfg.get("episode_max_ticks", 3))
         self.filter = filt if filt is not None else furniture.FurnitureFilter(
@@ -107,10 +108,16 @@ class CaptureSession:
     def tick(self):
         """One full cycle. Never raises — a bad tick must not kill the session.
 
-        Words are recorded when a line **leaves** the screen, not when it arrives, so
-        persistent chrome is never recorded and a held subtitle counts once (see
-        `furniture.EpisodeTracker`). That means a word shows up in the store one tick
-        after you saw it — the delay is the price of not carding the UI.
+        Ingestion is **lossless by default** (`count_mode='sightings'`): every
+        recognized line is recorded, chrome included. "打开 seen 150×" is true data —
+        that word really is ubiquitous — and discarding it would be solving a
+        *promotion* problem at the *ingestion* layer, which is exactly the split this
+        app is built around. Chrome is kept out of your deck by the promotion gate's
+        ubiquity ceiling (`frequency.is_promotable`), not by refusing to look at it.
+
+        `count_mode='episodes'` is the alternative: record one appearance-episode per
+        line instead of one per snapshot, which counts encounters rather than screen
+        time. Off by default.
         """
         self.ticks += 1
         try:
@@ -122,10 +129,14 @@ class CaptureSession:
                     return TickResult(skipped=True)
 
                 lines = self.provider.recognize(img)
+                # The tracker runs either way: in 'episodes' mode it decides what to
+                # record; in the default 'sightings' mode it only supplies the
+                # "how much of this screen is ambient" readout.
                 ended = self.tracker.update(lines)
-                n_obs, promoted = self._record(ended, digest)
+                to_record = ended if self.count_mode == "episodes" else lines
+                n_obs, promoted = self._record(to_record, digest)
                 return TickResult(lines=len(lines), chrome=self.tracker.persistent,
-                                  recorded=len(ended), observations=n_obs,
+                                  recorded=len(to_record), observations=n_obs,
                                   promoted=promoted)
         except Exception as exc:
             # A capture/OCR hiccup must not end the sitting; log it and tick on.
@@ -190,16 +201,18 @@ class CaptureSession:
         return self.summary()
 
     def close(self):
-        """End the sitting, recording whatever was still on screen.
+        """End the sitting.
 
-        Without the flush, the last thing you were reading is lost — its episode never
-        got to end. Long-lived (chrome) lines are excluded by the tracker.
+        In 'episodes' mode the last thing on screen never got to end, so it is flushed
+        or it would be lost. In the default 'sightings' mode every line was already
+        recorded as it was seen, so there is nothing to flush.
         """
         with self.lock:
             try:
-                leftovers = self.tracker.flush()
-                if leftovers:
-                    self._record(leftovers)
+                if self.count_mode == "episodes":
+                    leftovers = self.tracker.flush()
+                    if leftovers:
+                        self._record(leftovers)
             except Exception:
                 log.exception("flushing the final episodes")
             store.end_session(self.conn, self.session_id)

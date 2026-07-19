@@ -84,14 +84,21 @@ def test_malformed_region_is_ignored_not_fatal():
     assert Config({"region": {"left": 1}}).region() is None
 
 
-def test_validate_catches_furniture_threshold_above_min_count():
-    """THE invariant: chrome leaks threshold-1 observations against the N gate."""
-    problems = Config({"furniture_threshold": 3, "min_count": 2}).validate()
-    assert any("furniture_threshold" in p and "chrome" in p for p in problems)
+def test_validate_catches_a_disabled_ubiquity_filter():
+    """max_ubiquity is now the only thing keeping UI chrome out of the deck, so
+    switching it off should say so rather than be discovered later in your deck."""
+    problems = Config({"max_ubiquity": 1.0}).validate()
+    assert any("max_ubiquity" in p and "chrome" in p for p in problems)
 
 
-def test_threshold_equal_to_min_count_is_allowed():
-    assert Config({"furniture_threshold": 2, "min_count": 2}).validate() == []
+def test_validate_catches_bad_count_mode():
+    assert any("count_mode" in p for p in Config({"count_mode": "wat"}).validate())
+
+
+def test_furniture_threshold_no_longer_gates_auto_carding():
+    """It only affects MANUAL mode's chip de-cluttering now, so a high value is not
+    a problem the way it was when it (wrongly) guarded promotion."""
+    assert Config({"furniture_threshold": 5, "min_count": 2}).validate() == []
 
 
 def test_validate_catches_out_of_range():

@@ -337,21 +337,36 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
   not chrome.) A "static for ≥ M snapshots" threshold keeps a briefly-held title from
   being mistaken for furniture.
 
-  **CORRECTION (from a real session): the per-sighting filter above is NOT enough for
-  AUTO ingestion.** The claimed invariant — "chrome leaks at most `threshold-1`
-  observations, safely under the `N` gate" — was wrong. The leak is per
-  `(text, position)` **key, not per word**. A word appearing in two different chrome
-  lines (Douyin's `是否要打开声音？` prompt *and* its `打开声音` button) leaked one
-  observation each, hit `count=2`, and got carded. Half a real session's cards were UI.
-  The fix is `furniture.EpisodeTracker`, used for AUTO ingestion: **record a line when
-  its appearance ENDS, not when it starts.** Chrome persists, so it never ends and is
-  never recorded — a true zero leak. A held subtitle is recorded exactly once when it
-  goes. Cost: a word lands in the store one tick after you saw it. `FurnitureFilter`
-  stays for MANUAL mode, which must de-clutter the frame immediately and can't wait
-  for an episode to finish. Remaining leak: a *transient* toast is indistinguishable
-  from content by persistence, so keep the region on the subtitle band.
+  **CORRECTION (from a real session): none of the above is how chrome is kept out of
+  the deck.** Two wrong turns, recorded so neither is retaken:
 
-  **`dict_ok` is NOT a chrome filter — furniture detection is the only one.** Proven
+  1. The claimed invariant — "chrome leaks at most `threshold-1` observations, safely
+     under the `N` gate" — **was wrong**. The leak is per `(text, position)` **key,
+     not per word**: 打开 appeared in Douyin's `是否要打开声音？` prompt *and* its
+     `打开声音` button, leaked one observation each, hit `count=2`, and got carded.
+     Half a real session's cards were UI. Worse, ranking candidates by `count DESC`
+     actively *selects* for chrome — the most-seen word is the most ambient one.
+  2. The first fix made AUTO ingestion drop persistent lines. That solved a
+     **promotion** problem at the **ingestion** layer, violating the ingest≠promote
+     split this whole app is built on, and threw away true data ("打开 seen 150×" is
+     a real fact about a real word).
+
+  **The actual design: ingestion stays lossless; the gate excludes ambient words.**
+  A term appearing in more than `max_ubiquity` of all snapshots is either UI chrome or
+  a word so common the user already knows it (的/是/好) — one signal, both cases. It's
+  a *ratio*, so it holds for a 5-minute and a 3-hour session, and it supplies the
+  warm-up for free (nothing cards until ~6 snapshots exist). An ambient term is still
+  recorded, still ranked, still manually cardable — only auto-carding is withheld.
+  **Never add an explicit warm-up exemption**: chrome reaches count 2 on the *second*
+  snapshot, so any exemption window is exactly when it gets carded.
+  This also means **the capture region can be as large as you like** — a bigger region
+  is more real language, and ambient text is handled by the gate, not by aiming.
+
+  `FurnitureFilter`/`EpisodeTracker` still exist: the former de-clutters MANUAL mode's
+  chips (which can't wait for a ratio to settle), the latter is an opt-in
+  `count_mode='episodes'` that counts encounters rather than screen time.
+
+  **`dict_ok` is NOT a chrome filter either.** Proven
   on the real frames: a Douyin homepage OCR'd to 114 tokens with an 83–90% CEDICT hit
   rate, yet the top of the ranking was pure chrome (抖音×7, 精选×5, 三角洲×3) — because
   *chrome is made of real dictionary words* (游戏/音乐/影视/全部 all hit CEDICT). The

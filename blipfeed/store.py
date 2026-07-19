@@ -176,6 +176,17 @@ def add_snapshot(conn, session_id, *, source=None, region=None, image_hash=None,
     return cur.lastrowid
 
 
+def snapshot_count(conn):
+    """Total snapshots ever taken — the denominator for a term's ubiquity.
+
+    A term appearing in most snapshots is ambient (UI chrome, or a word so common the
+    user already knows it). Using a ratio rather than a raw count is what keeps that
+    judgement stable across a 5-minute and a 3-hour session.
+    """
+    row = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()
+    return row[0] if row else 0
+
+
 def last_snapshot_hash(conn, session_id, source=None):
     """Most recent snapshot's image_hash for change-detection (Phase 3)."""
     sql = "SELECT image_hash FROM snapshots WHERE session_id=?"

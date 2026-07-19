@@ -83,12 +83,40 @@ def ingest(conn, lines, *, session_id=None, snapshot_id=None, language="zh-CN",
 
 
 # --------------------------------- promotion ---------------------------------
-def is_promotable(row, cfg):
-    """The per-term half of the gate (the bucket handles status/meaning/count)."""
+def ubiquity(row, snapshots):
+    """Fraction of all snapshots this term appeared in. 0 when we have no samples."""
+    return (row["count"] / snapshots) if snapshots else 0.0
+
+
+def is_promotable(row, cfg, snapshots=0):
+    """The per-term half of the gate (the bucket handles status/meaning/count).
+
+    **Frequency is a band, not a floor.** Too rare (< N) is probably OCR noise; too
+    *ubiquitous* is either UI chrome or a word so common the learner already knows it
+    (的/是/好) — neither makes a card worth reviewing. One signal covers both cases.
+
+    Ubiquity is a ratio against total snapshots, not a raw count, so it doesn't
+    mis-fire as a session gets long: a genuinely useful word that reaches 30 sightings
+    over three hours is nothing like a nav item present in every frame. Nothing is
+    lost either way — an over-ubiquitous term stays in the queue, visible and
+    manually cardable.
+    """
     if len(row["term"]) < cfg.min_promote_length:
         return False
     conf = row["ocr_conf_max"]
     if conf is not None and conf < cfg.min_confidence:
+        return False
+    # No warm-up exemption. An earlier version skipped this check until N snapshots
+    # existed, so that chrome — which hits count>=2 on the *second* snapshot, being in
+    # every frame — sailed through the window and got carded. The guard defeated the
+    # thing it guarded.
+    #
+    # The warm-up is emergent instead: with min_count=2 and max_ubiquity=0.35, a term
+    # can't qualify until ~6 snapshots exist, because before that everything looks
+    # ubiquitous — which is the honest answer, not a special case.
+    # (snapshots==0 means nothing has been captured, e.g. direct ingestion in tests;
+    # there's no ratio to judge, so don't.)
+    if snapshots and ubiquity(row, snapshots) > cfg.get("max_ubiquity", 1.0):
         return False
     return True
 
@@ -98,12 +126,18 @@ def select_for_promotion(conn, cfg):
 
     Separated from `promote()` so the policy can be tested directly; it is the piece
     most likely to need tuning.
+
+    Note the ordering interacts with the gate: candidates arrive most-seen-first, so
+    without the ubiquity ceiling this would preferentially card the *most ambient*
+    words. That is exactly how a real session ended up carding Douyin's UI. Filter
+    first, then take the most-seen of what remains.
     """
     if not cfg.auto_card:
         return []
     candidates = store.bucket(conn, "ready", language=cfg.language,
                               min_count=cfg.min_count)
-    eligible = [r for r in candidates if is_promotable(r, cfg)]
+    snapshots = store.snapshot_count(conn)
+    eligible = [r for r in candidates if is_promotable(r, cfg, snapshots)]
     return eligible[:cfg.max_promotions_per_snapshot]
 
 

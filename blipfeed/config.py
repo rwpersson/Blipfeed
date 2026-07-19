@@ -7,15 +7,24 @@ and one place for a settings UI to drive.
 The file is written to `paths.config_file()`. A missing file is not an error — the
 defaults *are* the configuration until the user changes something.
 
-`validate()` enforces the invariants the design depends on, most importantly:
+## How chrome is kept out of your deck
 
-    furniture_threshold <= min_count
+Not by refusing to record it. **Ingestion is lossless** — "打开 seen 150×" is true
+data, and that word really is ubiquitous. Chrome is excluded at the *promotion* gate:
 
-Chrome leaks at most `furniture_threshold - 1` observations before suppression kicks
-in (see furniture.py), and promotion needs `min_count`. If a user raises the
-threshold past `min_count`, UI chrome becomes cardable — the one knob combination
-that silently breaks the product. Documented invariants that nothing checks are just
-folklore, so this one is checked.
+    max_ubiquity — a term appearing in more than this fraction of ALL snapshots is
+                   ambient (UI chrome, or a word so common you already know it) and
+                   is not auto-carded. It stays queued and manually cardable.
+
+A ratio rather than a raw count, so it holds for a 5-minute session and a 3-hour one.
+It also supplies the warm-up for free: with `min_count=2` and `max_ubiquity=0.35`
+nothing can card until ~6 snapshots exist, because before that everything looks
+ubiquitous. An earlier version had an explicit warm-up exemption instead, and chrome —
+which reaches count 2 on the *second* snapshot, being in every frame — sailed through
+that window and got carded. Don't reintroduce one.
+
+`furniture_threshold` now only affects MANUAL mode, where the chip picker must
+de-clutter the frame immediately and can't wait for a ratio to settle.
 """
 import json
 from pathlib import Path
@@ -36,14 +45,21 @@ DEFAULTS = {
     "region": None,                     # {left, top, width, height} or None
     "ocr_provider": "rapidocr",
 
-    # noise control
-    "furniture_threshold": 2,           # MANUAL mode: suppress from the Nth sighting
-    "episode_max_ticks": 3,             # AUTO mode: a line on screen longer than this
-                                        # many snapshots is chrome, never recorded
+    # counting: 'sightings' records every appearance (lossless — chrome included, so
+    # "seen 150x" stays true data); 'episodes' records one appearance-episode.
+    "count_mode": "sightings",
+    "furniture_threshold": 2,           # MANUAL mode: de-clutter chips immediately
+    "episode_max_ticks": 3,             # only used by count_mode='episodes'
     "min_confidence": 0.50,             # OCR confidence floor for promotion
 
     # promotion policy (the gate)
     "min_count": 2,                     # N: sightings before a term is eligible
+    "max_ubiquity": 0.35,               # skip terms appearing in >35% of ALL snapshots
+                                        # — ambient UI, or a word you already know.
+                                        # A ratio, not a count, so it survives long
+                                        # sessions. Still queued & manually cardable.
+                                        # Also supplies the warm-up: nothing can card
+                                        # until ~6 snapshots exist.
     "max_promotions_per_snapshot": 2,   # K: cap so a dense frame can't flood
     "min_promote_length": 2,            # skip 1-char basics (很/好/去/太) when
                                         # AUTO-carding; they stay visible in review
@@ -67,6 +83,7 @@ _RANGES = {
     "max_promotions_per_snapshot": (1, 50),
     "min_promote_length": (1, 10),
     "min_confidence": (0.0, 1.0),
+    "max_ubiquity": (0.01, 1.0),
 }
 
 
@@ -137,13 +154,16 @@ class Config:
             problems.append(f"mode: expected 'auto' or 'manual', "
                             f"got {self._data.get('mode')!r}")
 
-        # THE invariant: chrome leaks (threshold-1) observations; promotion needs
-        # min_count. threshold > min_count makes UI chrome cardable.
-        thr, n = self._data.get("furniture_threshold"), self._data.get("min_count")
-        if isinstance(thr, int) and isinstance(n, int) and thr > n:
+        if self._data.get("count_mode") not in ("sightings", "episodes"):
+            problems.append(f"count_mode: expected 'sightings' or 'episodes', "
+                            f"got {self._data.get('count_mode')!r}")
+
+        # A ubiquity ceiling at/above 1.0 disables the only thing keeping UI chrome
+        # out of the deck — worth saying out loud rather than leaving to discovery.
+        if self._data.get("max_ubiquity", 0) >= 1.0:
             problems.append(
-                f"furniture_threshold ({thr}) > min_count ({n}): UI chrome could "
-                f"reach a card. Keep furniture_threshold <= min_count.")
+                "max_ubiquity >= 1.0 disables the ambient-word filter: UI chrome and "
+                "words you already know will be auto-carded.")
         return problems
 
     # --- persistence --------------------------------------------------------

@@ -64,14 +64,11 @@ def make(conn, *, frames=None, per_call, cfg=None, writer=lambda rows: None):
         deck_writer=writer)
 
 
-def test_tick_ingests_when_a_line_leaves_the_screen(conn):
-    """Words are recorded when an episode ENDS, not when it starts."""
-    sess = make(conn, frames=[frame(1), frame(2)],
-                per_call=[[line("我喜欢学习")], []])
-    first = sess.tick()
-    assert first.lines == 1 and first.observations == 0   # still on screen
-    second = sess.tick()                                   # gone -> recorded
-    assert second.recorded == 1 and second.observations > 0
+def test_tick_records_what_it_sees(conn):
+    """Ingestion is lossless: what's on screen is recorded on the tick it's seen."""
+    sess = make(conn, per_call=[[line("我喜欢学习")]])
+    result = sess.tick()
+    assert result.lines == 1 and result.observations > 0
     assert store.find_term(conn, "学习")["count"] == 1
 
 
@@ -92,31 +89,43 @@ def test_changed_frame_runs_ocr_again(conn):
     assert sess.provider.calls == 2
 
 
-def test_persistent_chrome_never_reaches_the_store(conn):
-    """The real-session bug: chrome stays on screen, so it is never recorded."""
+def test_chrome_is_recorded_as_data_but_never_carded(conn, monkeypatch):
+    """Chrome IS counted — "seen 20x" is true data — but the promotion gate's
+    ubiquity ceiling keeps it out of the deck. Recording and carding are separate
+    decisions; that separation is the whole architecture."""
+    from blipfeed import dictionary
+    monkeypatch.setattr(dictionary, "_INDEX", {
+        "全部": Entry("全部", "全部", "quan2 bu4", ("whole; all",)),
+        "学习": XUEXI, "學習": XUEXI})
     nav = line("全部", x=10, y=10)
-    sess = make(conn, frames=[frame(i) for i in range(1, 5)],
-                per_call=[[nav, line("我喜欢学习", y=900)],
-                          [nav, line("今天天气很好", y=900)],
-                          [nav, line("他正在看电影", y=900)],
-                          [nav, line("这个视频真好笑", y=900)]])
-    for _ in range(4):
+    # 学习 appears in only 3 of 10 subtitles, so it is content, not ambient.
+    subtitles = ["我喜欢学习", "今天天气很好", "他正在看书", "外面下雨了",
+                 "学习中文", "我们去公园", "这个很有趣", "开始学习",
+                 "明天见面吧", "音乐真好听"]
+    sess = make(conn, frames=[frame(i) for i in range(1, 12)],
+                per_call=[[nav, line(t, y=900)] for t in subtitles])
+    for _ in range(len(subtitles)):
         sess.tick()
-    assert store.find_term(conn, "全部") is None      # zero leak, not a bounded one
-    assert store.find_term(conn, "学习") is not None  # content still recorded
+
+    chrome = store.find_term(conn, "全部")
+    assert chrome["count"] == len(subtitles)      # recorded, not discarded
+    assert chrome["status"] != "carded"           # but never auto-carded
+    assert "全部" not in sess.summary()["promoted"]
 
 
 def test_tick_promotes_when_the_threshold_is_crossed(conn, monkeypatch):
     from blipfeed import dictionary
     monkeypatch.setattr(dictionary, "_INDEX", {"学习": XUEXI, "學習": XUEXI})
     written = []
-    sess = make(conn, frames=[frame(1), frame(2), frame(3)],
-                per_call=[[line("我喜欢学习")], [line("学习中文", y=900)], []],
-                writer=written.append)
-    sess.tick()                              # 学习 on screen
-    sess.tick()                              # first line gone -> count 1
-    third = sess.tick()                      # second line gone -> count 2 -> carded
-    assert "学习" in third.promoted
+    # 学习 in 2 of 8 snapshots: over min_count, well under the ubiquity ceiling.
+    subtitles = ["我喜欢学习", "今天天气很好", "外面下雨了", "他正在看书",
+                 "学习中文", "我们去公园", "明天见面吧", "音乐真好听"]
+    sess = make(conn, frames=[frame(i) for i in range(1, 9)],
+                per_call=[[line(t)] for t in subtitles], writer=written.append)
+    promoted = []
+    for _ in range(len(subtitles)):
+        promoted += sess.tick().promoted
+    assert "学习" in promoted
     assert store.find_term(conn, "学习")["status"] == "carded"
     assert written                            # the deck writer ran
 
@@ -136,13 +145,21 @@ def test_tick_survives_a_failure(conn):
     assert sess.tick() is not None            # still usable afterwards
 
 
-def test_close_flushes_what_was_still_on_screen(conn):
-    """Session end must not lose the thing you were reading."""
-    sess = make(conn, per_call=[[line("我喜欢学习")]])
+def test_episodes_mode_records_on_disappearance_and_flushes_at_close(conn):
+    """The opt-in alternative: count encounters, not screen time."""
+    cfg = Config({"count_mode": "episodes"})
+    sess = make(conn, frames=[frame(1), frame(2)],
+                per_call=[[line("我喜欢学习")], []], cfg=cfg)
     sess.tick()
-    assert store.find_term(conn, "学习") is None      # episode hasn't ended
-    sess.close()
+    assert store.find_term(conn, "学习") is None      # episode hasn't ended yet
+    sess.tick()                                       # gone -> recorded once
     assert store.find_term(conn, "学习")["count"] == 1
+
+    held = make(conn, per_call=[[line("他正在看电影")]], cfg=cfg)
+    held.tick()
+    assert store.find_term(conn, "电影") is None
+    held.close()                                      # flush, or it would be lost
+    assert store.find_term(conn, "电影")["count"] == 1
 
 
 def test_run_stops_at_max_ticks(conn):

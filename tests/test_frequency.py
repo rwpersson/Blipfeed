@@ -146,3 +146,69 @@ def test_promote_writes_before_carding(conn):
         frequency.ingest(conn, [line("学习")], idx=IDX)
     frequency.promote(conn, cfg(), deck_writer=writer)
     assert seen["status_at_write"] != "carded"
+
+
+# ------------------------------ the ubiquity ceiling -------------------------
+def _snapshots(conn, n, session_id=None):
+    """Fake n snapshots so ubiquity has a denominator."""
+    sid = session_id or store.start_session(conn, "s")
+    for _ in range(n):
+        store.add_snapshot(conn, sid, source="r")
+    return sid
+
+
+def test_ubiquitous_term_is_not_auto_carded(conn):
+    """The real-session bug, stated as a rule: a word present in most snapshots is
+    ambient (UI, or something you already know) and must not auto-card."""
+    sid = _snapshots(conn, 20)
+    for _ in range(18):                     # 18/20 snapshots = 90% ubiquity
+        frequency.ingest(conn, [line("打开")], session_id=sid,
+                         idx={"打开": Entry("打开", "打開", "da3 kai1", ("to open",))})
+    assert frequency.select_for_promotion(conn, cfg()) == []
+    # ...but it is NOT discarded: still recorded, still visible, still cardable by hand
+    assert store.find_term(conn, "打开")["count"] == 18
+    assert [r["term"] for r in store.bucket(conn, "ready", min_count=2)] == ["打开"]
+
+
+def test_normal_term_is_carded_alongside_a_ubiquitous_one(conn):
+    """Your case: skip the ambient word, pick a different one from the same screen."""
+    idx = {"打开": Entry("打开", "打開", "da3 kai1", ("to open",)), **IDX}
+    sid = _snapshots(conn, 20)
+    for _ in range(18):
+        frequency.ingest(conn, [line("打开")], session_id=sid, idx=idx)
+    for _ in range(3):
+        frequency.ingest(conn, [line("学习")], session_id=sid, idx=idx)
+    picked = [r["term"] for r in frequency.select_for_promotion(conn, cfg())]
+    assert picked == ["学习"]               # ambient skipped, real word chosen
+
+
+def test_ubiquity_is_a_ratio_not_a_raw_count(conn):
+    """A long session must not block a genuinely useful word just for accumulating."""
+    idx = {"电影": Entry("电影", "電影", "dian4 ying3", ("movie",))}
+    sid = _snapshots(conn, 400)             # a long sitting
+    for _ in range(30):                     # 30 sightings, but only 7.5% ubiquity
+        frequency.ingest(conn, [line("电影")], session_id=sid, idx=idx)
+    assert [r["term"] for r in frequency.select_for_promotion(conn, cfg())] == ["电影"]
+
+
+def test_nothing_cards_until_there_are_enough_snapshots_to_judge(conn):
+    """Early on everything looks ubiquitous, so nothing qualifies — the warm-up is
+    emergent from the ratio, not a special case. An earlier version exempted the first
+    N snapshots and chrome sailed straight through that window and got carded."""
+    sid = _snapshots(conn, 2)
+    for _ in range(2):
+        frequency.ingest(conn, [line("学习")], session_id=sid, idx=IDX)
+    assert frequency.select_for_promotion(conn, cfg()) == []      # 2/2 = 100%
+
+    for _ in range(10):                     # more snapshots -> the ratio drops
+        store.add_snapshot(conn, sid, source="r")
+    assert [r["term"] for r in frequency.select_for_promotion(conn, cfg())] == ["学习"]
+
+
+def test_ubiquity_threshold_is_configurable(conn):
+    idx = {"东西": Entry("东西", "東西", "dong1 xi5", ("thing",))}
+    sid = _snapshots(conn, 20)
+    for _ in range(8):                      # 40% ubiquity
+        frequency.ingest(conn, [line("东西")], session_id=sid, idx=idx)
+    assert frequency.select_for_promotion(conn, cfg(max_ubiquity=0.35)) == []
+    assert frequency.select_for_promotion(conn, cfg(max_ubiquity=0.90)) != []
