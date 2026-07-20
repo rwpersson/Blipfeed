@@ -41,6 +41,9 @@ class FakeProvider:
         self.per_call = list(per_call)
         self.calls = 0
 
+    def configure(self, **params):
+        self.params = params
+
     def recognize(self, image):
         out = self.per_call[min(self.calls, len(self.per_call) - 1)]
         self.calls += 1

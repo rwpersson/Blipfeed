@@ -60,6 +60,9 @@ class CaptureSession:
         self.capturer = capturer if capturer is not None else capture.Capturer()
         self.provider = (provider if provider is not None
                          else ocr_mod.get_provider(cfg.get("ocr_provider")))
+        self.provider.configure(box_thresh=cfg.get("ocr_box_thresh"),
+                                text_score=cfg.get("ocr_text_score"),
+                                unclip_ratio=cfg.get("ocr_unclip_ratio"))
         self.detector = detector if detector is not None else capture.ChangeDetector()
         # Furniture state is per session and in memory, by design. AUTO ingestion
         # uses the EpisodeTracker (records a line when its appearance ends, so

@@ -44,6 +44,13 @@ DEFAULTS = {
     "monitor": 1,                       # mss monitor index (0 = virtual union)
     "region": None,                     # {left, top, width, height} or None
     "ocr_provider": "rapidocr",
+    # OCR detection sensitivity (RapidOCR). Lower box_thresh/text_score than the 0.5
+    # defaults so small text on a full-screen grab and stylized fonts get caught;
+    # ingestion is lossless and promotion has its own confidence gate, so the extra
+    # low-confidence hits never over-card. Raise these if a busy frame is too noisy.
+    "ocr_box_thresh": 0.3,
+    "ocr_text_score": 0.4,
+    "ocr_unclip_ratio": 1.6,
 
     # counting: 'sightings' records every appearance (lossless — chrome included, so
     # "seen 150x" stays true data); 'episodes' records one appearance-episode.
@@ -98,6 +105,9 @@ _RANGES = {
     "min_promote_length": (1, 10),
     "min_confidence": (0.0, 1.0),
     "max_ubiquity": (0.01, 1.0),
+    "ocr_box_thresh": (0.1, 0.9),
+    "ocr_text_score": (0.1, 0.9),
+    "ocr_unclip_ratio": (1.0, 3.0),
 }
 
 

@@ -59,6 +59,9 @@ class OcrProvider:
     def available(self):
         return True
 
+    def configure(self, **params):
+        """Set detection sensitivity, etc. No-op for providers that don't tune."""
+
     def recognize(self, image):
         """image: a path, or an HxWx3 BGR numpy array. -> list[OcrLine]"""
         raise NotImplementedError
@@ -70,6 +73,7 @@ class RapidOcrProvider(OcrProvider):
 
     def __init__(self):
         self._engine = None
+        self._params = {}
 
     def available(self):
         try:
@@ -77,6 +81,19 @@ class RapidOcrProvider(OcrProvider):
             return True
         except ImportError:
             return False
+
+    def configure(self, **params):
+        """Call-time detection tuning (RapidOCR accepts these per recognize):
+
+        - box_thresh (default 0.5) — lower detects fainter/smaller text
+        - text_score (default 0.5) — lower keeps lower-confidence recognitions
+        - unclip_ratio (default 1.6) — larger grows each detected box
+
+        Lowering the first two catches words the defaults drop (small text on a
+        full-screen grab, stylized fonts). Safe here because ingestion is lossless and
+        promotion has its own confidence gate — recording more never over-cards.
+        """
+        self._params = {k: v for k, v in params.items() if v is not None}
 
     def _ensure(self):
         if self._engine is None:
@@ -87,7 +104,7 @@ class RapidOcrProvider(OcrProvider):
 
     def recognize(self, image):
         engine = self._ensure()
-        result, _elapse = engine(image)
+        result, _elapse = engine(image, **self._params)
         if not result:
             return []
         lines = []
