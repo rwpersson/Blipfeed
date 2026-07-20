@@ -29,45 +29,55 @@ log = get("ui.review")
 _CJK_FONT = ("Microsoft YaHei", 11)
 _SMALL = ("Segoe UI", 9)
 
+# Colours for the clam theme's light background — dark, readable text; the previous
+# values were picked for the dark pick-window and were near-invisible here.
+_TEXT = "#1b1b1b"        # the meaning — primary readable text
+_MUTED = "#586170"       # reading + count
+_WARN = "#8a5a1a"        # why a candidate was filtered
+_CTX = "#4b5563"         # mined context sentence
+_WRAP = 440              # keeps text clear of the reserved button column
+
 
 class _Row(ttk.Frame):
-    """One candidate: term + reading + count, meaning/context, and its actions."""
+    """One candidate: term + reading + count, meaning/context, and its actions.
+
+    Laid out with pack, not grid: the button bar is reserved on the right *first*, so
+    it always gets its space and can never clip a button (an earlier grid layout let
+    the expanding middle column squeeze the right-aligned bar, cutting off "Define").
+    """
 
     def __init__(self, master, cand, actions, show_meaning=True):
-        super().__init__(master, padding=(8, 6))
-        self.columnconfigure(1, weight=1)
-
-        head = f"{cand.term}"
-        if cand.alt and cand.alt != cand.term:
-            head += f" · {cand.alt}"
-        ttk.Label(self, text=head, font=_CJK_FONT).grid(row=0, column=0, sticky="w")
-        sub = cand.reading or ""
-        sub += f"    seen {cand.count}×"
-        ttk.Label(self, text=sub, foreground="#7a8291", font=_SMALL).grid(
-            row=0, column=1, sticky="w", padx=(10, 0))
-
-        rownum = 1
-        if show_meaning and cand.meaning:
-            ttk.Label(self, text=cand.meaning, wraplength=520,
-                      foreground="#d0d0d0").grid(row=rownum, column=0, columnspan=2,
-                                                 sticky="w", pady=(2, 0))
-            rownum += 1
-        if cand.reasons:
-            ttk.Label(self, text="· " + "; ".join(cand.reasons), font=_SMALL,
-                      foreground="#8a6d3b").grid(row=rownum, column=0, columnspan=2,
-                                                 sticky="w")
-            rownum += 1
-        for ctx in cand.contexts[:2]:
-            ttk.Label(self, text=f"“{ctx}”", font=_SMALL, foreground="#6f7784",
-                      wraplength=520).grid(row=rownum, column=0, columnspan=2,
-                                           sticky="w")
-            rownum += 1
+        super().__init__(master, padding=(10, 8))
 
         bar = ttk.Frame(self)
-        bar.grid(row=0, column=2, rowspan=max(rownum, 1), sticky="e")
+        bar.pack(side="right", anchor="n")              # reserved before content
         for label, fn in actions:
-            ttk.Button(bar, text=label, width=8,
-                       command=fn).pack(side="left", padx=2)
+            ttk.Button(bar, text=label, width=8, command=fn).pack(side="left", padx=2)
+
+        content = ttk.Frame(self)
+        content.pack(side="left", fill="x", expand=True)
+
+        head_row = ttk.Frame(content)
+        head_row.pack(fill="x", anchor="w")
+        head = cand.term
+        if cand.alt and cand.alt != cand.term:
+            head += f"  ·  {cand.alt}"
+        ttk.Label(head_row, text=head, font=_CJK_FONT).pack(side="left")
+        sub = (cand.reading + "    ") if cand.reading else ""
+        sub += f"seen {cand.count}×"
+        ttk.Label(head_row, text=sub, foreground=_MUTED, font=_SMALL).pack(
+            side="left", padx=(10, 0))
+
+        if show_meaning and cand.meaning:
+            ttk.Label(content, text=cand.meaning, wraplength=_WRAP, justify="left",
+                      foreground=_TEXT).pack(anchor="w", pady=(2, 0))
+        if cand.reasons:
+            ttk.Label(content, text="· " + "; ".join(cand.reasons), font=_SMALL,
+                      foreground=_WARN, wraplength=_WRAP, justify="left").pack(
+                anchor="w")
+        for ctx in cand.contexts[:2]:
+            ttk.Label(content, text=f"“{ctx}”", font=_SMALL, foreground=_CTX,
+                      wraplength=_WRAP, justify="left").pack(anchor="w")
 
 
 class _Bucket(ttk.Frame):
@@ -84,7 +94,11 @@ class _Bucket(ttk.Frame):
         self.body = ttk.Frame(self.canvas)
         self.body.bind("<Configure>", lambda _e: self.canvas.configure(
             scrollregion=self.canvas.bbox("all")))
-        self.canvas.create_window((0, 0), window=self.body, anchor="nw", width=760)
+        self._win = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        # Match the inner frame to the canvas width so rows fill it and never depend
+        # on a hardcoded pixel width (which broke at 125% DPI).
+        self.canvas.bind("<Configure>",
+                         lambda e: self.canvas.itemconfigure(self._win, width=e.width))
         self.canvas.configure(yscrollcommand=vsb.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
@@ -103,7 +117,7 @@ class _Bucket(ttk.Frame):
         secondary = [c for c in cands if c.tier == "secondary"]
 
         if not primary:
-            ttk.Label(self.body, text="Nothing here right now.", foreground="#7a8291",
+            ttk.Label(self.body, text="Nothing here right now.", foreground=_MUTED,
                       padding=16).pack(anchor="w")
         for cand in primary:
             _Row(self.body, cand, actions_for(cand)).pack(fill="x")
