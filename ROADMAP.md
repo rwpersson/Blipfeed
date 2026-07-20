@@ -245,7 +245,7 @@ chrome on the second tick of a static screen).
 - ☐ **Tray icon** — start/stop, mode toggle, open review, quit. In headless auto mode
   the tray effectively *is* the UI, so this matters more here than it did in Blip.
   Needs an .ico (shared with packaging, Phase 8).
-- ☐ **Auto mode stays silent** — no toasts when a word is carded; that's the
+- ☑ **Auto mode stays silent** — no toasts when a word is carded; that's the
   interruption we're avoiding. Words accumulate, the user reviews after.
 - ☑ **"Redraw region" reachable at any time** — global hotkey (default
   `ctrl+alt+r`) reopens the picker mid-session, then resets the change detector and
@@ -258,21 +258,23 @@ chrome on the second tick of a static screen).
 - ☐ `ui/panel.py` — start/stop capture, pick region, name the session, **AUTO/MANUAL
   mode toggle**, live counters (snapshots taken, words seen, cards made). **Capture
   state always visible, one click to stop** (CLAUDE.md privacy decision #7).
-- ☐ `ui/pick.py` — **MANUAL-mode chip picker**: freeze the snapshot, overlay every
+- ☑ `ui/pick.py` — **MANUAL-mode chip picker**: freeze the snapshot, overlay every
   detected word as a clickable chip (furniture-filtered so it's not cluttered), user
   taps the ones to keep → they observe into the store. The precision path for dense
   frames (CLAUDE.md Decisions #2b). **Adjacent-chip merge** (万魂 + 幡 → 万魂幡) fixes
-  the OOV-slang fragmentation the real-frame test found, and can feed the jieba user
+  the OOV-slang fragmentation the real-frame test found, and feeds the jieba user
   dictionary so the merge sticks next time.
-- ☐ Session boundaries — a session is a sitting (a video, a scroll); review "words
-  from *that* video."
+- ☑ Session boundaries — a session is a sitting; `sessions` table + per-session
+  furniture/change state. (Per-source review filtering not surfaced in the UI yet.)
 - ☐ Pause/resume; auto-pause when the capture source window isn't foreground
   (optional).
 
 ## Phase 7 — Learning-quality touches ☐
 
-- ☐ Better example-sentence selection (prefer short, complete, distinct sentences
-  that actually contain the target).
+- ✗ ~~Better/cleaner example-sentence selection~~ — **dropped by product decision.**
+  The user prefers the raw OCR line ("where it actually came from") over an
+  artificially tidied sentence; a run-on of on-screen text is truer to the source and
+  still enrichable. `contexts_for` keeps returning the mined line as-is.
 - ☐ Word-difficulty / usefulness signal (HSK level, corpus rarity) to break
   frequency ties in promotion.
 - ☐ Roll the immersion deck by date (`immersion-<yyyy-mm-dd>`) so no single Blip deck
