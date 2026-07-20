@@ -107,6 +107,22 @@ class _Picker:
                  font=_UI_FONT, bg=_BG, fg=_DIM, anchor="w").pack(
             fill="x", padx=18, pady=(0, 8))
 
+        # --- action bar ------------------------------------------------------
+        # Packed BEFORE the expanding word bank on purpose: pack allocates space in
+        # order, so a bar packed after an expand=True widget is the first thing
+        # squeezed off-screen (Blip's gotcha #16). Reserve the bottom first.
+        bar = tk.Frame(root, bg=_PANEL)
+        bar.pack(fill="x", side="bottom")
+        self.status = tk.Label(bar, text="", anchor="w", bg=_PANEL, fg=_INK,
+                               font=("Segoe UI", 11), padx=16, pady=12)
+        self.status.pack(side="left", fill="x", expand=True)
+        self._button(bar, "Record  ✓", self.confirm, kind="accent").pack(
+            side="right", padx=(4, 14), pady=8)
+        self._button(bar, "Cancel", self.cancel, kind="ghost").pack(
+            side="right", padx=4, pady=8)
+        self.merge_btn = self._button(bar, "Merge", self.merge, kind="ghost")
+        self.merge_btn.pack(side="right", padx=4, pady=8)
+
         # --- the word bank ---------------------------------------------------
         wrap = tk.Frame(root, bg=_BG)
         wrap.pack(fill="both", expand=True, padx=12)
@@ -118,19 +134,6 @@ class _Picker:
         self.bank.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
         self._fill_bank()
-
-        # --- action bar ------------------------------------------------------
-        bar = tk.Frame(root, bg=_PANEL)
-        bar.pack(fill="x", side="bottom")
-        self.status = tk.Label(bar, text="", anchor="w", bg=_PANEL, fg=_INK,
-                               font=("Segoe UI", 11), padx=16, pady=12)
-        self.status.pack(side="left", fill="x", expand=True)
-        self.merge_btn = self._button(bar, "Merge", self.merge, kind="ghost")
-        self.merge_btn.pack(side="left", padx=4, pady=8)
-        self._button(bar, "Cancel", self.cancel, kind="ghost").pack(
-            side="left", padx=4)
-        self._button(bar, "Record  ✓", self.confirm, kind="accent").pack(
-            side="left", padx=(4, 14))
 
         root.bind("<Escape>", lambda _e: self.cancel())
         root.bind("<Return>", lambda _e: self.confirm())
