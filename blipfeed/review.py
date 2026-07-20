@@ -40,15 +40,19 @@ _BULLET = re.compile(r"^\s*(?:[-*·•]|\d+[.)])\s*")
 
 
 class Candidate:
-    """A queue row prepared for display: the store row + its derived context."""
+    """A queue row prepared for display: the store row + its tier.
 
-    __slots__ = ("row", "tier", "reasons", "contexts")
+    Context sentences are **not** carried here — fetching them costs a query per row,
+    and a bucket can hold hundreds of rows. The window pulls contexts lazily, only for
+    the rows it actually draws (`contexts_for`).
+    """
 
-    def __init__(self, row, tier, reasons, contexts):
+    __slots__ = ("row", "tier", "reasons")
+
+    def __init__(self, row, tier, reasons=()):
         self.row = row
         self.tier = tier
         self.reasons = reasons
-        self.contexts = contexts
 
     # convenience passthroughs the window reads
     id = property(lambda self: self.row["id"])
@@ -68,12 +72,9 @@ class ReviewController:
         self.cfg = cfg
 
     # ------------------------------------------------------------ read side
-    def _candidates(self, which, context_limit=3):
-        out = []
-        for c in frequency.review_queue(self.conn, self.cfg, which):
-            contexts = store.contexts_for(self.conn, c.row["id"], limit=context_limit)
-            out.append(Candidate(c.row, c.tier, c.reasons, contexts))
-        return out
+    def _candidates(self, which):
+        return [Candidate(c.row, c.tier, c.reasons)
+                for c in frequency.review_queue(self.conn, self.cfg, which)]
 
     def needs_definition(self):
         """The loud bucket: real words with no meaning yet."""
@@ -85,17 +86,23 @@ class ReviewController:
 
     def carded(self):
         """Already in the Blip deck — shown so UI stragglers can be pulled back out."""
-        rows = store.carded_terms(self.conn, self.cfg.language)
-        return [Candidate(r, "primary", (), store.contexts_for(self.conn, r["id"], 1))
-                for r in rows]
+        return [Candidate(r, "primary")
+                for r in store.carded_terms(self.conn, self.cfg.language)]
 
-    def counts(self):
+    def contexts_for(self, term_id, limit=2):
+        """Mined context sentences for one term — fetched lazily, per rendered row."""
+        return store.contexts_for(self.conn, term_id, limit)
+
+    def counts(self, needs=None, ready=None):
+        """Bucket sizes for the status bar. Accepts already-built lists so a refresh
+        doesn't compute them twice; falls back to building them (no contexts)."""
+        needs = self.needs_definition() if needs is None else needs
+        ready = self.ready() if ready is None else ready
+
         def split(cands):
             p = sum(1 for c in cands if c.tier == "primary")
             return p, len(cands) - p
-        nd_p, nd_s = split(self.needs_definition())
-        rd_p, rd_s = split(self.ready())
-        return {"needs_def": (nd_p, nd_s), "ready": (rd_p, rd_s),
+        return {"needs_def": split(needs), "ready": split(ready),
                 "carded": len(store.carded_terms(self.conn, self.cfg.language)),
                 "known": store.known_count(self.conn, self.cfg.language)}
 
@@ -167,7 +174,7 @@ class ReviewController:
         for c in cands:
             reading = f"  ({c.reading})" if c.reading else ""
             lines.append(f"{c.term}{reading}  — seen {c.count}×")
-            for sentence in c.contexts:
+            for sentence in self.contexts_for(c.id, 3):
                 lines.append(f"    · {sentence}")
         return "\n".join(lines)
 

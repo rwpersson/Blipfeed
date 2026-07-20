@@ -36,6 +36,9 @@ _MUTED = "#586170"       # reading + count
 _WARN = "#8a5a1a"        # why a candidate was filtered
 _CTX = "#4b5563"         # mined context sentence
 _WRAP = 440              # keeps text clear of the reserved button column
+_PAGE = 25               # rows drawn at once (~8 ms/row of ttk widget-building is the
+                         # whole cost). You act on the top of a frequency-ranked list,
+                         # and the list refreshes as you do; "…and N more" notes the tail.
 
 
 class _Row(ttk.Frame):
@@ -46,8 +49,9 @@ class _Row(ttk.Frame):
     the expanding middle column squeeze the right-aligned bar, cutting off "Define").
     """
 
-    def __init__(self, master, cand, actions, show_meaning=True):
+    def __init__(self, master, cand, actions, contexts=(), show_meaning=True):
         super().__init__(master, padding=(10, 8))
+        self._contexts = contexts
 
         bar = ttk.Frame(self)
         bar.pack(side="right", anchor="n")              # reserved before content
@@ -75,7 +79,7 @@ class _Row(ttk.Frame):
             ttk.Label(content, text="· " + "; ".join(cand.reasons), font=_SMALL,
                       foreground=_WARN, wraplength=_WRAP, justify="left").pack(
                 anchor="w")
-        for ctx in cand.contexts[:2]:
+        for ctx in self._contexts[:2]:
             ttk.Label(content, text=f"“{ctx}”", font=_SMALL, foreground=_CTX,
                       wraplength=_WRAP, justify="left").pack(anchor="w")
 
@@ -88,6 +92,8 @@ class _Bucket(ttk.Frame):
         self.window = window
         self.kind = kind
         self._show_secondary = tk.BooleanVar(value=False)
+        self._pending = None            # (cands, actions_for) awaiting a render
+        self._dirty = True              # needs (re)drawing before it's shown
 
         self.canvas = tk.Canvas(self, highlightthickness=0)
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -110,31 +116,54 @@ class _Bucket(ttk.Frame):
     def _wheel(self, event):
         self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
-    def render(self, cands, actions_for):
+    def set_data(self, cands, actions_for):
+        """Stash the rows to draw and mark dirty — but don't build widgets yet.
+
+        Rendering is deferred to when the tab is actually shown (`ensure_rendered`),
+        so acting on one tab doesn't rebuild the two you can't see. That's what made
+        every click cost ~4s: all three tabs, all ~350 rows, rebuilt each time.
+        """
+        self._pending = (cands, actions_for)
+        self._dirty = True
+
+    def ensure_rendered(self):
+        if self._dirty and self._pending is not None:
+            self._render(*self._pending)
+            self._dirty = False
+
+    def _draw_rows(self, cands, actions_for):
+        shown = cands[:_PAGE]
+        for cand in shown:
+            contexts = self.window.c.contexts_for(cand.id)     # lazy, per drawn row
+            _Row(self.body, cand, actions_for(cand), contexts=contexts).pack(fill="x")
+            ttk.Separator(self.body, orient="horizontal").pack(fill="x")
+        if len(cands) > _PAGE:
+            ttk.Label(self.body, foreground=_MUTED, padding=(10, 8),
+                      text=f"…and {len(cands) - _PAGE} more — act on these first, "
+                           f"or refine with known-words.").pack(anchor="w")
+
+    def _render(self, cands, actions_for):
         for w in self.body.winfo_children():
             w.destroy()
+        self.canvas.yview_moveto(0)
         primary = [c for c in cands if c.tier == "primary"]
         secondary = [c for c in cands if c.tier == "secondary"]
 
         if not primary:
             ttk.Label(self.body, text="Nothing here right now.", foreground=_MUTED,
                       padding=16).pack(anchor="w")
-        for cand in primary:
-            _Row(self.body, cand, actions_for(cand)).pack(fill="x")
-            ttk.Separator(self.body, orient="horizontal").pack(fill="x")
+        self._draw_rows(primary, actions_for)
 
         if secondary:
-            toggle = ttk.Checkbutton(
+            ttk.Checkbutton(
                 self.body,
                 text=f"  {len(secondary)} filtered out (ambient, single-character…) "
                      f"— show and act on them",
                 variable=self._show_secondary,
-                command=lambda: self.render(cands, actions_for))
-            toggle.pack(anchor="w", pady=(8, 4))
+                command=lambda: self._render(cands, actions_for)).pack(
+                anchor="w", pady=(8, 4))
             if self._show_secondary.get():
-                for cand in secondary:
-                    _Row(self.body, cand, actions_for(cand)).pack(fill="x")
-                    ttk.Separator(self.body, orient="horizontal").pack(fill="x")
+                self._draw_rows(secondary, actions_for)
 
 
 class ReviewWindow:
@@ -147,14 +176,17 @@ class ReviewWindow:
         self.status = ttk.Label(root, text="", padding=(10, 6), foreground="#7a8291")
         self.status.pack(side="bottom", fill="x")
 
-        nb = ttk.Notebook(root)
-        nb.pack(fill="both", expand=True)
-        self.needs = _Bucket(nb, self, "needs_def")
-        self.ready = _Bucket(nb, self, "ready")
-        self.carded = _Bucket(nb, self, "carded")
-        nb.add(self.needs, text="Needs a definition")
-        nb.add(self.ready, text="Ready to card")
-        nb.add(self.carded, text="Carded")
+        self.nb = ttk.Notebook(root)
+        self.nb.pack(fill="both", expand=True)
+        self.needs = _Bucket(self.nb, self, "needs_def")
+        self.ready = _Bucket(self.nb, self, "ready")
+        self.carded = _Bucket(self.nb, self, "carded")
+        self.nb.add(self.needs, text="Needs a definition")
+        self.nb.add(self.ready, text="Ready to card")
+        self.nb.add(self.carded, text="Carded")
+        # Draw a tab only when it's shown, so acting on one tab never rebuilds the
+        # others (the whole reason clicks were slow).
+        self.nb.bind("<<NotebookTabChanged>>", lambda _e: self._show_current())
 
         bar = ttk.Frame(self.needs)
         bar.pack(side="bottom", fill="x", pady=4)
@@ -166,15 +198,31 @@ class ReviewWindow:
         self.refresh()
 
     # ------------------------------------------------------------- rendering
+    def _current_bucket(self):
+        selected = self.nb.select()          # widget path of the visible tab
+        for bucket in (self.needs, self.ready, self.carded):
+            if str(bucket) == selected:
+                return bucket
+        return self.needs
+
+    def _show_current(self):
+        self._current_bucket().ensure_rendered()
+
     def refresh(self):
-        self.needs.render(self.c.needs_definition(), self._needs_actions)
-        self.ready.render(self.c.ready(), self._ready_actions)
-        self.carded.render(self.c.carded(), self._carded_actions)
-        counts = self.c.counts()
+        """Recompute the data once, stash it on each tab, draw only the visible one."""
+        needs = self.c.needs_definition()
+        ready = self.c.ready()
+        carded = self.c.carded()
+        self.needs.set_data(needs, self._needs_actions)
+        self.ready.set_data(ready, self._ready_actions)
+        self.carded.set_data(carded, self._carded_actions)
+
+        counts = self.c.counts(needs=needs, ready=ready)
         nd, rd = counts["needs_def"], counts["ready"]
         self.status.config(
             text=f"Needs a definition: {nd[0]}   ·   Ready: {rd[0]}   ·   "
                  f"Carded: {counts['carded']}   ·   Known: {counts['known']}")
+        self._show_current()
 
     def _do(self, fn, term_id):
         try:

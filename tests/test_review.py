@@ -57,7 +57,8 @@ def test_needs_definition_lists_undefined_words(conn):
     assert "无畏" in terms
     row = next(x for x in c.needs_definition() if x.term == "无畏")
     assert row.meaning is None
-    assert row.contexts == ["无畏契约真好玩"]        # mined context comes along
+    # contexts are fetched lazily (per drawn row), not carried on every candidate
+    assert c.contexts_for(row.id) == ["无畏契约真好玩"]
 
 
 def test_ready_lists_defined_words(conn):
