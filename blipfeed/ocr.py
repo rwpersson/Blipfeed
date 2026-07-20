@@ -21,10 +21,18 @@ log = get("ocr")
 
 @dataclass(frozen=True)
 class OcrLine:
-    """One recognized line. `box` is (x0, y0, x1, y1) in captured-image pixels."""
+    """One recognized line.
+
+    `box` is the axis-aligned bbox (x0, y0, x1, y1) in captured-image pixels — what
+    furniture keying and positioning use. `quad` keeps the OCR's four corner points
+    ((x, y) × 4, clockwise from top-left) so the *angle* survives — text on screen is
+    often slanted, and the manual picker draws its word borders along it. `quad` is
+    None for lines built without corner data (tests, non-RapidOCR providers).
+    """
     text: str
     confidence: float
     box: tuple
+    quad: tuple = None
 
     @property
     def position(self):
@@ -36,6 +44,13 @@ def _bbox(points):
     xs = [float(p[0]) for p in points]
     ys = [float(p[1]) for p in points]
     return (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
+
+
+def _quad(points):
+    """The four corner points as floats, or None if not a quadrilateral."""
+    if not points or len(points) != 4:
+        return None
+    return tuple((float(p[0]), float(p[1])) for p in points)
 
 
 class OcrProvider:
@@ -79,7 +94,8 @@ class RapidOcrProvider(OcrProvider):
         for points, text, conf in result:
             text = (text or "").strip()
             if text:
-                lines.append(OcrLine(text, float(conf), _bbox(points)))
+                lines.append(OcrLine(text, float(conf), _bbox(points),
+                                     quad=_quad(points)))
         return lines
 
 

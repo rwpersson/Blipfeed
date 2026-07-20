@@ -11,12 +11,12 @@ human does it: select the adjacent chips, hit Merge, and the fused term is recor
 
 ## Two ways to pick, one selection
 
-- **On the screen** (top): the frozen frame, dimmed, with the words drawn as bold pills
-  *at the position they appeared*. This keeps spatial context — is 游戏 the nav bar or
-  the subtitle? The old version drew tiny faint text at the source scale; these are
-  fixed-size, bold, high-contrast pills, so they're actually readable.
-- **In the word bank** (below): the same words as a flowing, wrapping list — easier
-  for dense frames where pills would overlap.
+- **On the screen** (top): the frozen frame with a **border around each recognized
+  word, at the line's true angle** (from the OCR quad, not an axis-aligned box), so
+  the actual on-screen text stays visible underneath. Hovering brightens a border;
+  clicking selects it. Keeps spatial context — is 游戏 the nav bar or the subtitle?
+- **In the word bank** (below): the same words as a flowing, wrapping list of pills —
+  easier for dense frames where the on-image borders crowd together.
 
 A word is one `_Chip` with two representations; clicking either toggles the same
 selection, and `_paint` keeps both in sync. Ordinary focus-taking window (Decisions #6).
@@ -52,46 +52,65 @@ _SEL_BORDER = "#6b9bff"
 _ACCENT = "#2f6fed"
 
 _CHIP_FONT = ("Microsoft YaHei", 15, "bold")     # word bank
-_CANVAS_FONT = ("Microsoft YaHei", 13, "bold")   # on-image pills
 _UI_FONT = ("Segoe UI", 10)
 _HEAD_FONT = ("Segoe UI Semibold", 13)
 
+# on-image word borders — drawn over the (barely-dimmed) frame, so bright
+_EDGE = "#8fa8cc"                # a word's border, at rest
+_EDGE_FILL = "#0e1b33"           # faint stipple tint — makes the whole word clickable
 _WIN_W_FRAC, _WIN_H_FRAC = 0.80, 0.90
 _IMAGE_H_FRAC = 0.52             # share of the window given to the screen view
-_DIM_BRIGHTNESS = 0.5            # how far the screenshot recedes behind the pills
+_DIM_BRIGHTNESS = 0.82           # keep the words legible; borders still read
+
+
+def _lerp(a, b, f):
+    return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
 
 
 class _Chip:
-    __slots__ = ("text", "line_index", "order", "box", "selected",
+    __slots__ = ("text", "line_index", "order", "quad", "selected",
                  "bank_widget", "tag")
 
-    def __init__(self, text, line_index, order, box):
+    def __init__(self, text, line_index, order, quad):
         self.text = text
         self.line_index = line_index
         self.order = order
-        self.box = box               # (x0,y0,x1,y1) in displayed-image px, or None
+        self.quad = quad             # 4 (x,y) points in displayed-image px, or None
         self.selected = False
         self.bank_widget = None
         self.tag = None              # canvas tag for this chip's items
 
 
+def _line_corners(line, scale):
+    """The line's four corners (TL, TR, BR, BL) in displayed px. Uses the OCR quad
+    when present (so an angled line is followed), else the axis-aligned box."""
+    if line.quad is not None:
+        p = [(x * scale, y * scale) for x, y in line.quad]
+        return p[0], p[1], p[2], p[3]
+    x0, y0, x1, y1 = (c * scale for c in line.box)
+    return (x0, y0), (x1, y0), (x1, y1), (x0, y1)
+
+
 def _chips_for(lines, scale):
-    """Clickable tokens in reading order, each with a displayed-image box (for the
-    overlay) plus line + order (for merge adjacency)."""
+    """Clickable tokens in reading order, each with a 4-point quad (for the overlay
+    border, at the line's true angle) plus line + order (for merge adjacency)."""
     chips = []
     for li, line in enumerate(lines):
         tokens = segment.tokenize(line.text)
         if not tokens:
             continue
-        x0, y0, x1, y1 = (c * scale for c in line.box)
+        tl, tr, br, bl = _line_corners(line, scale)
         total = sum(len(t) for t in tokens) or 1
         cursor = 0
         for order, tok in enumerate(tokens):
-            a = x0 + (cursor / total) * (x1 - x0)
+            f0 = cursor / total
             cursor += len(tok)
-            b = x0 + (cursor / total) * (x1 - x0)
+            f1 = cursor / total
             if segment.keep(tok):
-                chips.append(_Chip(tok, li, order, (a, y0, b, y1)))
+                # slice the line quad between f0 and f1 along both edges
+                quad = (_lerp(tl, tr, f0), _lerp(tl, tr, f1),
+                        _lerp(bl, br, f1), _lerp(bl, br, f0))
+                chips.append(_Chip(tok, li, order, quad))
     return chips
 
 
@@ -171,25 +190,20 @@ class _Picker:
                          bg=bg, fg=fg, activebackground=active, activeforeground=fg,
                          relief="flat", bd=0, padx=16, pady=7, cursor="hand2")
 
-    # ---- screen view ----
+    # ---- screen view: an angled border per word ----
     def _fill_canvas(self):
         self.canvas.delete("chip")
         for chip in self.chips:
-            if chip.box is None:
+            if chip.quad is None:
                 continue
-            x0, y0, x1, y1 = chip.box
-            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
             tag = f"c{id(chip)}"
             chip.tag = tag
-            t = self.canvas.create_text(cx, cy, text=chip.text, font=_CANVAS_FONT,
-                                        fill=_CHIP_FG, tags=("chip", tag))
-            bb = self.canvas.bbox(t)
-            pad = 5
-            r = self.canvas.create_rectangle(bb[0] - pad, bb[1] - pad, bb[2] + pad,
-                                             bb[3] + pad, fill=_CHIP_BG,
-                                             outline=_CHIP_BORDER, width=1,
-                                             tags=("chip", tag))
-            self.canvas.tag_raise(t, r)
+            pts = [c for point in chip.quad for c in point]
+            # a faint stipple fill is what makes the whole (empty-looking) word area
+            # hoverable/clickable — an outline-only polygon only reacts on its edge.
+            self.canvas.create_polygon(*pts, fill=_EDGE_FILL, stipple="gray12",
+                                       outline=_EDGE, width=2, joinstyle="round",
+                                       tags=("chip", tag))
             self.canvas.tag_bind(tag, "<Button-1>",
                                  lambda _e, c=chip: self.toggle(c))
             self.canvas.tag_bind(tag, "<Enter>",
@@ -201,21 +215,15 @@ class _Picker:
     def _paint_canvas(self, chip):
         if chip.tag is None:
             return
-        rects = [i for i in self.canvas.find_withtag(chip.tag)
-                 if self.canvas.type(i) == "rectangle"]
-        texts = [i for i in self.canvas.find_withtag(chip.tag)
-                 if self.canvas.type(i) == "text"]
+        for it in self.canvas.find_withtag(chip.tag):
+            if chip.selected:
+                self.canvas.itemconfig(it, outline=_SEL_BORDER, width=3,
+                                       fill=_SEL_BG, stipple="gray25")
+            else:
+                self.canvas.itemconfig(it, outline=_EDGE, width=2,
+                                       fill=_EDGE_FILL, stipple="gray12")
         if chip.selected:
-            for r in rects:
-                self.canvas.itemconfig(r, fill=_SEL_BG, outline=_SEL_BORDER, width=2)
-            for t in texts:
-                self.canvas.itemconfig(t, fill=_SEL_FG)
-            self.canvas.tag_raise(chip.tag)          # selected pills on top
-        else:
-            for r in rects:
-                self.canvas.itemconfig(r, fill=_CHIP_BG, outline=_CHIP_BORDER, width=1)
-            for t in texts:
-                self.canvas.itemconfig(t, fill=_CHIP_FG)
+            self.canvas.tag_raise(chip.tag)          # selected on top
 
     # ---- word bank ----
     def _make_bank_chip(self, chip):
@@ -261,13 +269,15 @@ class _Picker:
     def _hover(self, chip, entering):
         if chip.selected:
             return
-        colour = _CHIP_HOVER if entering else _CHIP_BORDER
         if chip.bank_widget is not None:
+            colour = _CHIP_HOVER if entering else _CHIP_BORDER
             chip.bank_widget.config(highlightbackground=colour, highlightcolor=colour)
         if chip.tag is not None:
-            for r in self.canvas.find_withtag(chip.tag):
-                if self.canvas.type(r) == "rectangle":
-                    self.canvas.itemconfig(r, outline=colour)
+            for it in self.canvas.find_withtag(chip.tag):
+                self.canvas.itemconfig(
+                    it, outline=_ACCENT if entering else _EDGE,
+                    width=3 if entering else 2,
+                    stipple="gray25" if entering else "gray12")
 
     # -------------------------------------------------------------- selection
     def selected(self):
@@ -304,10 +314,11 @@ class _Picker:
         segment.add_user_word(merged)          # sticks for every future snapshot
         keep, drop = picked[0], picked[1:]
         keep.text = merged
-        if keep.box and all(c.box for c in picked):
-            xs = [c.box[0] for c in picked] + [c.box[2] for c in picked]
-            ys = [c.box[1] for c in picked] + [c.box[3] for c in picked]
-            keep.box = (min(xs), min(ys), max(xs), max(ys))
+        # the merged quad runs from the first fragment's left edge to the last's
+        # right edge, following the line's angle: first TL/BL, last TR/BR.
+        if all(c.quad for c in picked):
+            first, last = picked[0].quad, picked[-1].quad
+            keep.quad = (first[0], last[1], last[2], first[3])
         for chip in drop:
             self.chips.remove(chip)
         keep.selected = True
