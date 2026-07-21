@@ -70,7 +70,10 @@ class DashboardWindow:
         want_h = self.body.winfo_reqheight() + 4
         root.geometry(f"470x{min(want_h, int(root.winfo_screenheight() * 0.92))}")
 
+        self._hinted_tray = False
+        self._last_running = None
         self._register_hotkeys()
+        self._setup_tray()
         self._pulse()
         self._refresh()
 
@@ -306,6 +309,11 @@ class DashboardWindow:
         self.hint.config(text=self._hint(s),
                          fg=t.ACCENT if s["region"] is None else t.MUTED)
 
+        # keep the tray's label/tooltip in step when capture starts or stops
+        if getattr(self, "tray_active", False) and running != self._last_running:
+            self._last_running = running
+            self.tray.refresh()
+
         self.root.after(1000 if running else 2500, self._refresh)
 
     def _hint(self, s):
@@ -341,13 +349,52 @@ class DashboardWindow:
         for combo, why in self.listener.failed.items():
             log.warning("hotkey %s unavailable: %s", combo, why)
 
-    def _on_close(self):
+    # --------------------------------------------------------------- tray
+    def _setup_tray(self):
+        from .tray import Tray
+
+        def marshal(fn):
+            return lambda: self.root.after(0, fn)
+
+        self.tray = Tray(running=self.c.running,
+                         on_toggle=marshal(self._tray_toggle),
+                         on_show=marshal(self._show_window),
+                         on_review=marshal(self._open_review),
+                         on_quit=marshal(self._quit))
+        self.tray_active = self.tray.start()
+
+    def _tray_toggle(self):
+        try:
+            self.c.toggle()
+        except NoRegion:
+            pass
+        self._refresh()
+
+    def _show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _quit(self):
         try:
             self.listener.stop()
         except Exception:
             log.exception("stopping hotkeys")
+        if getattr(self, "tray", None):
+            self.tray.stop()
         self.c.close()
         self.root.destroy()
+
+    def _on_close(self):
+        """The window's X hides to the tray (capture keeps running); Quit is on the
+        tray menu. Without a tray, X quits."""
+        if getattr(self, "tray_active", False):
+            self.root.withdraw()
+            if not self._hinted_tray:
+                self._hinted_tray = True
+                self.tray.notify("Still running here — right-click to stop or quit.")
+        else:
+            self._quit()
 
 
 def run(controller):

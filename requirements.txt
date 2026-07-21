@@ -16,6 +16,9 @@ pypinyin>=0.51          # reading + tones (ported approach from Blip's lang.py)
 
 # --- capture ---
 mss>=9.0                # fast screen-region grabs
+
+# --- tray (background control while gaming) ---
+pystray>=0.19           # system-tray icon (native Win32 backend, uses Pillow)
 Pillow>=10.0            # image handling / hashing / the spike's synthetic frames
 numpy>=1.26             # array ops for change-detection hashing
 
