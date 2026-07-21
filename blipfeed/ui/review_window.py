@@ -94,6 +94,7 @@ class _Bucket(ttk.Frame):
         self._show_secondary = tk.BooleanVar(value=False)
         self._pending = None            # (cands, actions_for) awaiting a render
         self._dirty = True              # needs (re)drawing before it's shown
+        self._limits = {"primary": _PAGE, "secondary": _PAGE}
 
         self.canvas = tk.Canvas(self, highlightthickness=0, bg=_t.BG)
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -125,34 +126,55 @@ class _Bucket(ttk.Frame):
         """
         self._pending = (cands, actions_for)
         self._dirty = True
+        self._limits = {"primary": _PAGE, "secondary": _PAGE}   # reset on new data
 
     def ensure_rendered(self):
         if self._dirty and self._pending is not None:
             self._render(*self._pending)
             self._dirty = False
 
-    def _draw_rows(self, cands, actions_for):
-        shown = cands[:_PAGE]
-        for cand in shown:
+    def _draw_rows(self, cands, actions_for, which):
+        """Draw up to this list's current limit, then a 'Show more' button the user
+        controls — revealing a page at a time keeps a 200-row bucket responsive while
+        still letting them reach every last word."""
+        limit = self._limits[which]
+        for cand in cands[:limit]:
             contexts = self.window.c.contexts_for(cand.id)     # lazy, per drawn row
             _Row(self.body, cand, actions_for(cand), contexts=contexts).pack(fill="x")
             ttk.Separator(self.body, orient="horizontal").pack(fill="x")
-        if len(cands) > _PAGE:
-            ttk.Label(self.body, foreground=_MUTED, padding=(10, 8),
-                      text=f"…and {len(cands) - _PAGE} more — act on these first, "
-                           f"or refine with known-words.").pack(anchor="w")
+        hidden = len(cands) - limit
+        if hidden > 0:
+            more = min(_PAGE, hidden)
+            bar = ttk.Frame(self.body)
+            bar.pack(fill="x", pady=(6, 4))
+            ttk.Button(bar, text=f"Show {more} more",
+                       command=lambda: self._show_more(which)).pack(side="left",
+                                                                    padx=10)
+            if hidden > more:
+                ttk.Button(bar, text=f"Show all {len(cands)}",
+                           command=lambda: self._show_all(which, len(cands))).pack(
+                    side="left")
+            ttk.Label(bar, text=f"{hidden} more", foreground=_MUTED).pack(
+                side="left", padx=10)
+
+    def _show_more(self, which):
+        self._limits[which] += _PAGE
+        self._render(*self._pending)
+
+    def _show_all(self, which, total):
+        self._limits[which] = total
+        self._render(*self._pending)
 
     def _render(self, cands, actions_for):
         for w in self.body.winfo_children():
             w.destroy()
-        self.canvas.yview_moveto(0)
         primary = [c for c in cands if c.tier == "primary"]
         secondary = [c for c in cands if c.tier == "secondary"]
 
         if not primary:
             ttk.Label(self.body, text="Nothing here right now.", foreground=_MUTED,
                       padding=16).pack(anchor="w")
-        self._draw_rows(primary, actions_for)
+        self._draw_rows(primary, actions_for, "primary")
 
         if secondary:
             ttk.Checkbutton(
@@ -163,7 +185,7 @@ class _Bucket(ttk.Frame):
                 command=lambda: self._render(cands, actions_for)).pack(
                 anchor="w", pady=(8, 4))
             if self._show_secondary.get():
-                self._draw_rows(secondary, actions_for)
+                self._draw_rows(secondary, actions_for, "secondary")
 
 
 class ReviewWindow:
