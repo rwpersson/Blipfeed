@@ -36,9 +36,9 @@ _MUTED = _t.MUTED        # reading + count
 _WARN = _t.WARNING       # why a candidate was filtered
 _CTX = _t.FAINT          # mined context sentence
 _WRAP = 440              # keeps text clear of the reserved button column
-_PAGE = 25               # rows drawn at once (~8 ms/row of ttk widget-building is the
-                         # whole cost). You act on the top of a frequency-ranked list,
-                         # and the list refreshes as you do; "…and N more" notes the tail.
+_PAGE = 25               # rows a "Show more" reveals; the tail sits behind it
+_LOAD_BATCH = 2          # rows built per event-loop tick when streaming a tab in —
+                         # small so the window stays responsive and rows cascade
 
 
 class _Row(ttk.Frame):
@@ -97,6 +97,9 @@ class _Bucket(ttk.Frame):
         self.stale = False              # data changed; refetch before showing
         self._limits = {"primary": _PAGE, "secondary": _PAGE}
         self._rows = {}                 # term_id -> [row_widget, separator]
+        self._queue = []                # remaining build steps (incremental render)
+        self._load_job = None           # the pending `after` for the next chunk
+        self._removed = set()           # ids acted on mid-stream — don't build them
 
         self.canvas = tk.Canvas(self, highlightthickness=0, bg=_t.BG)
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -118,8 +121,9 @@ class _Bucket(ttk.Frame):
         self.canvas.yview_scroll(int(-delta / 120), "units")
 
     def remove(self, term_id):
-        """Surgically drop one term's row (after an action) instead of rebuilding the
-        whole tab — the rebuild is ~28 ms/row, so removing one widget is instant."""
+        """Surgically drop one term after an action — instant vs a ~28 ms/row rebuild.
+        Also mark it removed so a queued-but-not-yet-streamed row for it is skipped."""
+        self._removed.add(term_id)
         entry = self._rows.pop(term_id, None)
         if entry:
             for widget in entry:
@@ -133,12 +137,8 @@ class _Bucket(ttk.Frame):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def set_data(self, cands, actions_for):
-        """Stash the rows to draw and mark dirty — but don't build widgets yet.
-
-        Rendering is deferred to when the tab is actually shown (`ensure_rendered`),
-        so acting on one tab doesn't rebuild the two you can't see. That's what made
-        every click cost ~4s: all three tabs, all ~350 rows, rebuilt each time.
-        """
+        """Stash the rows to draw and mark dirty — widgets are built later, only when
+        the tab is shown (`ensure_rendered`), and then incrementally."""
         self._pending = (cands, actions_for)
         self._dirty = True
         self._limits = {"primary": _PAGE, "secondary": _PAGE}   # reset on new data
@@ -146,65 +146,97 @@ class _Bucket(ttk.Frame):
     def ensure_rendered(self):
         if self._dirty and self._pending is not None:
             self._render(*self._pending)
-            self._dirty = False
 
-    def _draw_rows(self, cands, actions_for, which):
-        """Draw up to this list's current limit, then a 'Show more' button the user
-        controls — revealing a page at a time keeps a 200-row bucket responsive while
-        still letting them reach every last word."""
-        limit = self._limits[which]
-        for cand in cands[:limit]:
-            contexts = self.window.c.contexts_for(cand.id)     # lazy, per drawn row
-            row = _Row(self.body, cand, actions_for(cand), contexts=contexts)
+    # ------------------------------------------------ incremental rendering
+    def _render(self, cands, actions_for):
+        """Build the tab **incrementally**: the window paints at once and rows cascade
+        in over the event loop, so it never blocks (a full 25-row rebuild was ~700 ms).
+        Interruptible: a tab switch cancels it, and a row acted on mid-stream is
+        skipped."""
+        self._dirty = False                     # in progress; don't re-trigger
+        self._cancel_load()
+        for w in self.body.winfo_children():
+            w.destroy()
+        self._rows = {}
+        self._removed = set()
+        primary = [c for c in cands if c.tier == "primary"]
+        secondary = [c for c in cands if c.tier == "secondary"]
+
+        steps = []
+        if not primary:
+            steps.append(lambda: ttk.Label(
+                self.body, text="Nothing here right now.", foreground=_MUTED,
+                padding=16).pack(anchor="w"))
+        steps += [self._row_step(c, actions_for) for c in primary[:self._limits["primary"]]]
+        steps.append(lambda: self._more(primary, "primary"))
+        if secondary:
+            steps.append(lambda: self._secondary_toggle(cands, actions_for, secondary))
+            if self._show_secondary.get():
+                steps += [self._row_step(c, actions_for)
+                          for c in secondary[:self._limits["secondary"]]]
+                steps.append(lambda: self._more(secondary, "secondary"))
+        self._queue = steps
+        self._pump()
+
+    def _row_step(self, cand, actions_for):
+        def build():
+            if cand.id in self._removed:        # acted on before it streamed in
+                return
+            ctx = self.window.c.contexts_for(cand.id)
+            row = _Row(self.body, cand, actions_for(cand), contexts=ctx)
             row.pack(fill="x")
             sep = ttk.Separator(self.body, orient="horizontal")
             sep.pack(fill="x")
             self._rows[cand.id] = [row, sep]
-        hidden = len(cands) - limit
-        if hidden > 0:
-            more = min(_PAGE, hidden)
-            bar = ttk.Frame(self.body)
-            bar.pack(fill="x", pady=(6, 4))
-            ttk.Button(bar, text=f"Show {more} more",
-                       command=lambda: self._show_more(which)).pack(side="left",
-                                                                    padx=10)
-            if hidden > more:
-                ttk.Button(bar, text=f"Show all {len(cands)}",
-                           command=lambda: self._show_all(which, len(cands))).pack(
-                    side="left")
-            ttk.Label(bar, text=f"{hidden} more", foreground=_MUTED).pack(
-                side="left", padx=10)
+        return build
 
-    def _show_more(self, which):
-        self._limits[which] += _PAGE
+    def _more(self, cands, which):
+        hidden = len(cands) - self._limits[which]
+        if hidden <= 0:
+            return
+        bar = ttk.Frame(self.body)
+        bar.pack(fill="x", pady=(6, 4))
+        ttk.Button(bar, text=f"Show {min(_PAGE, hidden)} more",
+                   command=lambda: self._show_more(which)).pack(side="left", padx=10)
+        if hidden > _PAGE:
+            ttk.Button(bar, text=f"Show all {len(cands)}",
+                       command=lambda: self._show_more(which, cands)).pack(side="left")
+        ttk.Label(bar, text=f"{hidden} more", foreground=_MUTED).pack(
+            side="left", padx=10)
+
+    def _show_more(self, which, all_of=None):
+        self._limits[which] = len(all_of) if all_of else self._limits[which] + _PAGE
         self._render(*self._pending)
 
-    def _show_all(self, which, total):
-        self._limits[which] = total
-        self._render(*self._pending)
+    def _secondary_toggle(self, cands, actions_for, secondary):
+        ttk.Checkbutton(
+            self.body,
+            text=f"  {len(secondary)} filtered out (ambient, single-character…) "
+                 f"— show and act on them",
+            variable=self._show_secondary,
+            command=lambda: self._render(cands, actions_for)).pack(
+            anchor="w", pady=(8, 4))
 
-    def _render(self, cands, actions_for):
-        for w in self.body.winfo_children():
-            w.destroy()
-        self._rows = {}
-        primary = [c for c in cands if c.tier == "primary"]
-        secondary = [c for c in cands if c.tier == "secondary"]
+    def _pump(self):
+        self._load_job = None
+        for _ in range(_LOAD_BATCH):
+            if not self._queue:
+                break
+            self._queue.pop(0)()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        if self._queue:
+            self._load_job = self.window.root.after(0, self._pump)
 
-        if not primary:
-            ttk.Label(self.body, text="Nothing here right now.", foreground=_MUTED,
-                      padding=16).pack(anchor="w")
-        self._draw_rows(primary, actions_for, "primary")
-
-        if secondary:
-            ttk.Checkbutton(
-                self.body,
-                text=f"  {len(secondary)} filtered out (ambient, single-character…) "
-                     f"— show and act on them",
-                variable=self._show_secondary,
-                command=lambda: self._render(cands, actions_for)).pack(
-                anchor="w", pady=(8, 4))
-            if self._show_secondary.get():
-                self._draw_rows(secondary, actions_for, "secondary")
+    def _cancel_load(self):
+        if self._load_job is not None:
+            try:
+                self.window.root.after_cancel(self._load_job)
+            except tk.TclError:
+                pass
+            self._load_job = None
+        if self._queue:                         # interrupted -> re-render on revisit
+            self._queue = []
+            self._dirty = True
 
 
 class ReviewWindow:
@@ -255,6 +287,9 @@ class ReviewWindow:
 
     def _show_current(self):
         bucket = self._current_bucket()
+        for other in (self.needs, self.ready, self.carded):
+            if other is not bucket:
+                other._cancel_load()             # only the visible tab streams
         if bucket.stale:                         # data changed since last shown
             fetch, actions = self._fetch[bucket]
             bucket.set_data(fetch(), actions)
