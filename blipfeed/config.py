@@ -35,6 +35,9 @@ from .logging_setup import get
 log = get("config")
 
 DEFAULTS = {
+    # first-run onboarding shown once; set true when the welcome flow completes
+    "onboarded": False,
+
     # what we're learning
     "language": "zh-CN",
 

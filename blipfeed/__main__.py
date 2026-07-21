@@ -171,6 +171,13 @@ def main(argv=None):
         finally:
             conn.close()
 
+    # First launch: onboarding runs first, in its own process so the dashboard opens
+    # on a clean root afterwards (one Tk root per process).
+    if not cfg.get("onboarded"):
+        import subprocess
+        subprocess.run([sys.executable, "-m", "blipfeed.ui.firstrun_window"])
+        cfg = config_mod.load()                   # pick up region/known/onboarded
+
     # Default: the dashboard is home. AUTO capture runs headless behind it.
     from .dashboard import DashboardController
     from .ui.dashboard_window import run
