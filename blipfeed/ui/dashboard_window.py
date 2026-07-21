@@ -52,9 +52,28 @@ class DashboardWindow:
         self._busy = threading.Lock()
         root.title("Blipfeed")
         root.configure(bg=_BG)
-        root.geometry("460x600")
-        root.minsize(420, 560)
+        root.minsize(440, 320)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # A scrollable body, so content can never be clipped at any window size
+        # (the whole point of this fix). All content is parented to self.body.
+        outer = tk.Frame(root, bg=_BG)
+        outer.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(outer, bg=_BG, highlightthickness=0)
+        vsb = tk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self.canvas, bg=_BG)
+        self._body_win = self.canvas.create_window((0, 0), window=self.body,
+                                                   anchor="nw")
+        self.body.bind("<Configure>", lambda _e: self.canvas.configure(
+            scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(
+            self._body_win, width=e.width))
+        self.canvas.bind("<Enter>", lambda _e: self.canvas.bind_all(
+            "<MouseWheel>", self._wheel))
+        self.canvas.bind("<Leave>", lambda _e: self.canvas.unbind_all("<MouseWheel>"))
 
         self._build_header()
         self._build_primary()
@@ -62,16 +81,25 @@ class DashboardWindow:
         self._build_region()
         self._build_stats()
         self._build_actions()
+        tk.Label(self.body, text="New cards appear in Blip on its next launch.",
+                 bg=_BG, fg=_DIM, font=("Segoe UI", 9)).pack(pady=(6, 12))
 
-        tk.Label(root, text="New cards appear in Blip on its next launch.",
-                 bg=_BG, fg=_DIM, font=("Segoe UI", 9)).pack(side="bottom", pady=8)
+        # Size the window to the real content height, so nothing is cut off out of
+        # the box; the scrollbar covers anything smaller.
+        root.update_idletasks()
+        want_h = self.body.winfo_reqheight() + 4
+        max_h = int(root.winfo_screenheight() * 0.92)
+        root.geometry(f"460x{min(want_h, max_h)}")
 
         self._register_hotkeys()
         self._refresh()
 
+    def _wheel(self, event):
+        self.canvas.yview_scroll(int(-event.delta / 120), "units")
+
     # ------------------------------------------------------------- building
     def _build_header(self):
-        head = tk.Frame(self.root, bg=_BG)
+        head = tk.Frame(self.body, bg=_BG)
         head.pack(fill="x", padx=20, pady=(18, 6))
         tk.Label(head, text="Blipfeed", bg=_BG, fg=_INK, font=_F_TITLE).pack(
             side="left")
@@ -79,7 +107,7 @@ class DashboardWindow:
         self.dot.pack(side="right")
 
     def _build_primary(self):
-        wrap = tk.Frame(self.root, bg=_BG)
+        wrap = tk.Frame(self.body, bg=_BG)
         wrap.pack(fill="x", padx=20, pady=(6, 10))
         self.primary = tk.Button(wrap, text="▶  Start", command=self._primary_click,
                                  font=_F_BIG, bg=_ACCENT, fg="#fff", relief="flat",
@@ -88,7 +116,7 @@ class DashboardWindow:
         self.primary.pack(fill="x")
 
     def _card(self, title):
-        card = tk.Frame(self.root, bg=_CARD)
+        card = tk.Frame(self.body, bg=_CARD)
         card.pack(fill="x", padx=20, pady=6)
         if title:
             tk.Label(card, text=title, bg=_CARD, fg=_DIM,
@@ -152,7 +180,7 @@ class DashboardWindow:
                 self.stat[key] = num
 
     def _build_actions(self):
-        row = tk.Frame(self.root, bg=_BG)
+        row = tk.Frame(self.body, bg=_BG)
         row.pack(fill="x", padx=20, pady=(8, 4))
         self.review_btn = tk.Button(row, text="Review", command=self._open_review,
                                     font=_F_BIG, bg=_OFF, fg=_INK, relief="flat",
