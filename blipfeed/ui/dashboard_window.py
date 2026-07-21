@@ -72,6 +72,7 @@ class DashboardWindow:
 
         self._hinted_tray = False
         self._last_running = None
+        self._children = []                  # Review/Stats run as separate processes
         self._register_hotkeys()
         self._setup_tray()
         self._pulse()
@@ -231,11 +232,18 @@ class DashboardWindow:
             self._toast(f"Region set to {region.label()}.")
         self._refresh()
 
+    def _spawn(self, module):
+        """Open a sibling window as its own process (one Tk root per process), tracked
+        so Quit can close it too — the user expects Quit to close *everything* Blipfeed,
+        not just this window."""
+        self._children = [p for p in self._children if p.poll() is None]   # prune dead
+        self._children.append(subprocess.Popen([sys.executable, "-m", module]))
+
     def _open_review(self):
-        subprocess.Popen([sys.executable, "-m", "blipfeed.review"])
+        self._spawn("blipfeed.review")
 
     def _open_stats(self):
-        subprocess.Popen([sys.executable, "-m", "blipfeed.ui.stats_window"])
+        self._spawn("blipfeed.ui.stats_window")
 
     def _open_settings(self):
         # in-process (Toplevel), so a Save mutates the config we hold and takes effect
@@ -381,6 +389,13 @@ class DashboardWindow:
         self.root.focus_force()
 
     def _quit(self):
+        # close every Blipfeed window we opened, not just this one
+        for proc in self._children:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    log.exception("closing child window")
         try:
             self.listener.stop()
         except Exception:
