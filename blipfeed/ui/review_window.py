@@ -4,11 +4,19 @@ All behaviour lives in review.py (tested, no Tk); this only draws it and forward
 clicks. An ordinary focus-taking window — the user opened it deliberately (CLAUDE.md
 Decisions #6), so no Win32 gymnastics.
 
-Layout: three tabs — **Needs a definition** (loudest, opens first), **Ready to card**,
-**Carded** (for pulling leaked UI back out). Each row shows the term, reading, count,
-meaning, and mined context; the secondary (ambient / 1-char / …) tier is collapsed
-behind a toggle, never hidden. The enrichment loop is two buttons on the needs-def
-tab: **Copy for AI** and **Paste enriched**.
+Tabs (each a `_Bucket` over `ReviewController`, added by `_add_tab`): **Needs def**
+(loudest; has the Copy-for-AI / Paste-enriched loop), **Ready**, **Session** (every
+word from the latest sitting), **Manual** (hand-picked chips), **Ignored**, **Known**,
+**Carded**, and **Search**. A **date filter** at the top narrows all tabs to words
+gathered on the chosen day(s).
+
+Two ideas keep it consistent and scalable:
+- **One adaptive action set** (`_actions`) — a row's buttons follow its status
+  (carded→Un-card, ignored→Un-ignore+Card, new→Define/Card+Known+Ignore), so every tab
+  shares it.
+- **Reconcile, don't rebuild** — after an action a status-filtered tab drops the one
+  row; a status-agnostic tab (Session/Manual/Search) rebuilds it in place with its new
+  status. Rows also stream in incrementally so a big tab never blocks.
 """
 import sys
 import tkinter as tk
@@ -71,6 +79,15 @@ class _Row(ttk.Frame):
         sub += f"seen {cand.count}×"
         ttk.Label(head_row, text=sub, foreground=_MUTED, font=_SMALL).pack(
             side="left", padx=(10, 0))
+        # a status chip, so the mixed tabs (session/manual/search) read at a glance
+        if cand.status not in ("new", "queued"):
+            colour = {"carded": _t.GOOD, "known": _t.ACCENT,
+                      "ignored": _MUTED}.get(cand.status, _MUTED)
+            ttk.Label(head_row, text=f"  ● {cand.status}", foreground=colour,
+                      font=_SMALL).pack(side="left")
+        if cand.manual:
+            ttk.Label(head_row, text="  ⌨", foreground=_MUTED, font=_SMALL).pack(
+                side="left")
 
         if show_meaning and cand.meaning:
             ttk.Label(content, text=cand.meaning, wraplength=_WRAP, justify="left",
@@ -238,36 +255,66 @@ class _Bucket(ttk.Frame):
             self._queue = []
             self._dirty = True
 
+    # -------------------------------------------- after-action reconciliation
+    def reconcile(self, term_id, new_cands, actions_for):
+        """After an action, the acted term may leave this tab (status-filtered tabs)
+        or just change (status-agnostic tabs like Session/Manual/Search). Update that
+        one row rather than rebuilding — a status-filtered tab drops it, an agnostic
+        tab rebuilds it in place with its new status + actions."""
+        self._pending = (new_cands, actions_for)
+        still = next((c for c in new_cands if c.id == term_id), None)
+        if still is None:
+            self.remove(term_id)
+        else:
+            self._replace_row(term_id, still, actions_for)
+
+    def _replace_row(self, term_id, cand, actions_for):
+        entry = self._rows.get(term_id)
+        if not entry:                           # not currently drawn — nothing to do
+            return
+        old_row, old_sep = entry
+        ctx = self.window.c.contexts_for(cand.id)
+        row = _Row(self.body, cand, actions_for(cand), contexts=ctx)
+        row.pack(fill="x", before=old_row)
+        sep = ttk.Separator(self.body, orient="horizontal")
+        sep.pack(fill="x", before=old_row)
+        old_row.destroy()
+        old_sep.destroy()
+        self._rows[term_id] = [row, sep]
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
 
 class ReviewWindow:
     def __init__(self, root, controller):
         self.root = root
         self.c = controller
+        self._dates = []                     # active date filter (empty = all dates)
+        self._search_query = ""
         root.title("Blipfeed — review")
-        root.geometry("820x640")
+        root.geometry("900x680")
+        _t.apply_icon(root)
 
         self.status = ttk.Label(root, text="", padding=(10, 6), foreground=_t.MUTED)
         self.status.pack(side="bottom", fill="x")
+        self._build_filter_bar(root)
 
         self.nb = ttk.Notebook(root)
         self.nb.pack(fill="both", expand=True)
-        self.needs = _Bucket(self.nb, self, "needs_def")
-        self.ready = _Bucket(self.nb, self, "ready")
-        self.carded = _Bucket(self.nb, self, "carded")
-        self.nb.add(self.needs, text="Needs a definition")
-        self.nb.add(self.ready, text="Ready to card")
-        self.nb.add(self.carded, text="Carded")
-        # Draw a tab only when it's shown, so acting on one tab never rebuilds the
-        # others (the whole reason clicks were slow).
-        self.nb.bind("<<NotebookTabChanged>>", lambda _e: self._show_current())
-        # One wheel binding for the whole window -> the visible tab (the per-canvas
-        # binding was unreliable; see _Bucket).
-        root.bind_all("<MouseWheel>", lambda e: self._current_bucket().scroll(e.delta))
-        # how each bucket's data is fetched, for the lazy stale-refresh after an action
-        self._fetch = {self.needs: (self.c.needs_definition, self._needs_actions),
-                       self.ready: (self.c.ready, self._ready_actions),
-                       self.carded: (self.c.carded, self._carded_actions)}
+        self._buckets = []                   # every tab's list
+        self._fetch = {}                     # bucket -> () -> [Candidate]
+        self._tab_of = {}                    # notebook widget path -> bucket
 
+        d = lambda: (self._dates or None)    # noqa: E731 — the live date filter
+        self.needs = self._add_tab("Needs def", lambda: self.c.needs_definition(d()))
+        self.ready = self._add_tab("Ready", lambda: self.c.ready(d()))
+        self._add_tab("Session", self.c.latest_session)       # a sitting, not a date
+        self._add_tab("Manual", lambda: self.c.manual_terms(d()))
+        self._add_tab("Ignored", lambda: self.c.ignored(d()))
+        self._add_tab("Known", lambda: self.c.known(d()))
+        self.carded = self._add_tab("Carded", lambda: self.c.carded(d()))
+        self._add_search_tab()
+
+        # the manual-AI loop lives on the needs tab
         bar = ttk.Frame(self.needs)
         bar.pack(side="bottom", fill="x", pady=4)
         ttk.Button(bar, text="Copy for AI", command=self._copy_for_ai).pack(
@@ -275,49 +322,101 @@ class ReviewWindow:
         ttk.Button(bar, text="Paste enriched…", command=self._paste_enriched).pack(
             side="left", padx=4)
 
+        self.nb.bind("<<NotebookTabChanged>>", lambda _e: self._show_current())
+        root.bind_all("<MouseWheel>", lambda e: self._current_bucket().scroll(e.delta))
         self.refresh()
+
+    # ----------------------------------------------------------- tab wiring
+    def _add_tab(self, label, fetch):
+        bucket = _Bucket(self.nb, self, label)
+        self.nb.add(bucket, text=label)
+        self._buckets.append(bucket)
+        self._fetch[bucket] = fetch
+        self._tab_of[str(bucket)] = bucket
+        return bucket
+
+    def _add_search_tab(self):
+        frame = ttk.Frame(self.nb)
+        top = ttk.Frame(frame)
+        top.pack(fill="x", padx=6, pady=6)
+        ttk.Label(top, text="Find a word:").pack(side="left", padx=(4, 6))
+        self.search_var = tk.StringVar()
+        entry = ttk.Entry(top, textvariable=self.search_var, width=28)
+        entry.pack(side="left")
+        entry.bind("<Return>", lambda _e: self._run_search())
+        ttk.Button(top, text="Search", command=self._run_search).pack(
+            side="left", padx=6)
+        bucket = _Bucket(frame, self, "search")
+        bucket.pack(fill="both", expand=True)
+        self.nb.add(frame, text="Search")
+        self.search_bucket = bucket
+        self._buckets.append(bucket)
+        self._fetch[bucket] = lambda: self.c.search(self._search_query,
+                                                    self._dates or None)
+        self._tab_of[str(frame)] = bucket
+
+    def _run_search(self):
+        self._search_query = self.search_var.get().strip()
+        self.search_bucket.set_data(self._fetch[self.search_bucket](), self._actions)
+        self.search_bucket.ensure_rendered()
+
+    # ------------------------------------------------------------- date filter
+    def _build_filter_bar(self, root):
+        bar = ttk.Frame(root)
+        bar.pack(side="top", fill="x")
+        ttk.Label(bar, text="Filter:", padding=(10, 6)).pack(side="left")
+        self.dates_btn = ttk.Button(bar, text="All dates",
+                                    command=self._open_date_filter)
+        self.dates_btn.pack(side="left", padx=4, pady=4)
+
+    def _open_date_filter(self):
+        _DateDialog(self.root, self.c.available_dates(), self._dates,
+                    self._apply_dates)
+
+    def _apply_dates(self, dates):
+        self._dates = dates
+        self.dates_btn.config(text="All dates" if not dates
+                              else f"{len(dates)} date(s) ▾")
+        for b in self._buckets:
+            b.stale = True
+        self._show_current()
+        self._status()
 
     # ------------------------------------------------------------- rendering
     def _current_bucket(self):
-        selected = self.nb.select()          # widget path of the visible tab
-        for bucket in (self.needs, self.ready, self.carded):
-            if str(bucket) == selected:
-                return bucket
-        return self.needs
+        return self._tab_of.get(self.nb.select(), self._buckets[0])
 
     def _show_current(self):
         bucket = self._current_bucket()
-        for other in (self.needs, self.ready, self.carded):
+        for other in self._buckets:
             if other is not bucket:
                 other._cancel_load()             # only the visible tab streams
-        if bucket.stale:                         # data changed since last shown
-            fetch, actions = self._fetch[bucket]
-            bucket.set_data(fetch(), actions)
+        if bucket.stale:
+            bucket.set_data(self._fetch[bucket](), self._actions)
             bucket.stale = False
         bucket.ensure_rendered()
 
     def refresh(self):
-        """Full refresh — recompute every tab's data, draw only the visible one. Used
-        on open and after a bulk change (paste-enriched); single actions use `_do`."""
-        needs = self.c.needs_definition()
-        ready = self.c.ready()
-        self.needs.set_data(needs, self._needs_actions)
-        self.ready.set_data(ready, self._ready_actions)
-        self.carded.set_data(self.c.carded(), self._carded_actions)
-        self._status(needs, ready)
+        """Full refresh — recompute every tab and draw the visible one. On open and
+        after a bulk change (paste-enriched). Single actions use `_do`."""
+        data = {b: self._fetch[b]() for b in self._buckets}
+        for b, cands in data.items():
+            b.set_data(cands, self._actions)
+        self._status(data[self.needs], data[self.ready])
         self._show_current()
 
     def _status(self, needs=None, ready=None):
         counts = self.c.counts(needs=needs, ready=ready)
         nd, rd = counts["needs_def"], counts["ready"]
+        extra = "   ·   filtered by date" if self._dates else ""
         self.status.config(
             text=f"Needs a definition: {nd[0]}   ·   Ready: {rd[0]}   ·   "
-                 f"Carded: {counts['carded']}   ·   Known: {counts['known']}")
+                 f"Carded: {counts['carded']}   ·   Known: {counts['known']}{extra}")
 
     def _do(self, fn, term_id):
-        """A single-term action: apply it, then **surgically remove that one row** from
-        the visible tab and mark the others stale (they refetch when next shown). This
-        keeps a click near-instant instead of rebuilding ~25 rows (~700 ms)."""
+        """A single-term action: apply it, then reconcile just the acted row on the
+        visible tab (drop it if it left, rebuild it if it merely changed) and mark the
+        others stale. Near-instant vs rebuilding the tab."""
         try:
             fn(term_id)
         except Exception as exc:
@@ -325,24 +424,30 @@ class ReviewWindow:
             messagebox.showerror("Blipfeed", str(exc))
             return
         current = self._current_bucket()
-        current.remove(term_id)
-        for bucket in (self.needs, self.ready, self.carded):
+        current.reconcile(term_id, self._fetch[current](), self._actions)
+        for bucket in self._buckets:
             if bucket is not current:
                 bucket.stale = True
         self._status()
 
-    def _needs_actions(self, cand):
-        return [("Define", lambda c=cand: self._define(c)),
-                ("Known", lambda c=cand: self._do(self.c.mark_known, c.id)),
-                ("Ignore", lambda c=cand: self._do(self.c.ignore, c.id))]
-
-    def _ready_actions(self, cand):
-        return [("Card it", lambda c=cand: self._do(self.c.accept, c.id)),
-                ("Known", lambda c=cand: self._do(self.c.mark_known, c.id)),
-                ("Ignore", lambda c=cand: self._do(self.c.ignore, c.id))]
-
-    def _carded_actions(self, cand):
-        return [("Un-card", lambda c=cand: self._do(self.c.uncard, c.id))]
+    # ------------------------------------------------- adaptive per-row actions
+    def _actions(self, cand):
+        """The buttons a row gets depend on its state, so every tab can share one
+        function and stay consistent — a carded word offers Un-card, an ignored word
+        Un-ignore (+ Card if it has a meaning), a new word Define-or-Card + Known +
+        Ignore."""
+        do = lambda fn: (lambda c=cand: self._do(fn, c.id))  # noqa: E731
+        card = ("Card", do(self.c.accept))
+        if cand.status == "carded":
+            return [("Un-card", do(self.c.uncard))]
+        if cand.status == "known":
+            return [("Don't know", do(self.c.revive))] + ([card] if cand.meaning else [])
+        if cand.status == "ignored":
+            return [("Un-ignore", do(self.c.revive))] + ([card] if cand.meaning else [])
+        first = ("Card it", do(self.c.accept)) if cand.meaning \
+            else ("Define", lambda c=cand: self._define(c))
+        return [first, ("Known", do(self.c.mark_known)),
+                ("Ignore", do(self.c.ignore))]
 
     # ------------------------------------------------------------- dialogs
     def _define(self, cand):
@@ -439,6 +544,80 @@ class _PasteDialog(tk.Toplevel):
         text = self.text.get("1.0", "end")
         self.destroy()
         self.on_apply(text)
+
+
+class _DateDialog(tk.Toplevel):
+    """Pick one or more dates to filter by — check the mined days, and/or type one.
+    Multi-select: the words from all chosen dates are shown."""
+
+    def __init__(self, master, dates, selected, on_apply):
+        super().__init__(master)
+        self.on_apply = on_apply
+        self.title("Filter by date")
+        self.configure(bg=_t.BG)
+        self.transient(master)
+        _t.apply_icon(self)
+        tk.Label(self, text="Show words gathered on:", bg=_t.BG, fg=_t.INK,
+                 font=_t.FONT, padx=12, pady=(12, 4)).pack(anchor="w")
+
+        wrap = tk.Frame(self, bg=_t.SURFACE)
+        wrap.pack(fill="both", expand=True, padx=12)
+        cv = tk.Canvas(wrap, bg=_t.SURFACE, highlightthickness=0, height=240, width=260)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=cv.yview)
+        body = tk.Frame(cv, bg=_t.SURFACE)
+        body.bind("<Configure>", lambda _e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.create_window((0, 0), window=body, anchor="nw")
+        cv.configure(yscrollcommand=sb.set)
+        cv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        cv.bind("<Enter>", lambda _e: cv.bind_all(
+            "<MouseWheel>", lambda ev: cv.yview_scroll(int(-ev.delta / 120), "units")))
+        cv.bind("<Leave>", lambda _e: cv.unbind_all("<MouseWheel>"))
+
+        self.vars = {}
+        chosen = set(selected)
+        for d in dates:
+            var = tk.BooleanVar(value=d in chosen)
+            self.vars[d] = var
+            tk.Checkbutton(body, text=d, variable=var, bg=_t.SURFACE, fg=_t.INK,
+                           selectcolor=_t.SURFACE_2, activebackground=_t.SURFACE,
+                           activeforeground=_t.INK, font=_t.FONT, anchor="w",
+                           highlightthickness=0, bd=0, cursor="hand2").pack(
+                fill="x", anchor="w", padx=6)
+        if not dates:
+            tk.Label(body, text="No mined dates yet.", bg=_t.SURFACE, fg=_t.MUTED,
+                     font=_t.FONT_SMALL).pack(anchor="w", padx=8, pady=8)
+
+        row = tk.Frame(self, bg=_t.BG)
+        row.pack(fill="x", padx=12, pady=8)
+        tk.Label(row, text="or type (YYYY-MM-DD):", bg=_t.BG, fg=_t.MUTED,
+                 font=_t.FONT_SMALL).pack(side="left")
+        self.typed = tk.Entry(row, width=13, bg=_t.SURFACE_2, fg=_t.INK,
+                              insertbackground=_t.INK, relief="flat")
+        self.typed.pack(side="left", padx=6)
+
+        bar = tk.Frame(self, bg=_t.BG)
+        bar.pack(fill="x", padx=12, pady=(0, 12))
+        _t.button(bar, "Apply", self._apply, kind="primary").pack(side="right")
+        _t.button(bar, "All dates", self._clear, kind="ghost").pack(
+            side="right", padx=6)
+        self.grab_set()
+
+    def _selected(self):
+        out = [d for d, v in self.vars.items() if v.get()]
+        typed = self.typed.get().strip()
+        if typed and typed not in out:
+            out.append(typed)
+        return out
+
+    def _apply(self):
+        self.on_apply(self._selected())
+        self.destroy()
+
+    def _clear(self):
+        self.on_apply([])
+        self.destroy()
+
 
 
 def run(controller):
