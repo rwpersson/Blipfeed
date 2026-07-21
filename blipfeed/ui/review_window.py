@@ -94,7 +94,9 @@ class _Bucket(ttk.Frame):
         self._show_secondary = tk.BooleanVar(value=False)
         self._pending = None            # (cands, actions_for) awaiting a render
         self._dirty = True              # needs (re)drawing before it's shown
+        self.stale = False              # data changed; refetch before showing
         self._limits = {"primary": _PAGE, "secondary": _PAGE}
+        self._rows = {}                 # term_id -> [row_widget, separator]
 
         self.canvas = tk.Canvas(self, highlightthickness=0, bg=_t.BG)
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -102,20 +104,33 @@ class _Bucket(ttk.Frame):
         self.body.bind("<Configure>", lambda _e: self.canvas.configure(
             scrollregion=self.canvas.bbox("all")))
         self._win = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
-        # Match the inner frame to the canvas width so rows fill it and never depend
-        # on a hardcoded pixel width (which broke at 125% DPI).
         self.canvas.bind("<Configure>",
                          lambda e: self.canvas.itemconfigure(self._win, width=e.width))
         self.canvas.configure(yscrollcommand=vsb.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
-        # wheel sc. bind only while the pointer is over this canvas
-        self.canvas.bind("<Enter>", lambda _e: self.canvas.bind_all(
-            "<MouseWheel>", self._wheel))
-        self.canvas.bind("<Leave>", lambda _e: self.canvas.unbind_all("<MouseWheel>"))
+        # NB: the wheel is bound once at the window level (ReviewWindow), not per
+        # canvas — a per-canvas <Enter>/<Leave> binding broke, because moving onto a
+        # _Row (which sits on the canvas) fires the canvas <Leave> and unbinds it, so
+        # the wheel only worked over empty gaps.
 
-    def _wheel(self, event):
-        self.canvas.yview_scroll(int(-event.delta / 120), "units")
+    def scroll(self, delta):
+        self.canvas.yview_scroll(int(-delta / 120), "units")
+
+    def remove(self, term_id):
+        """Surgically drop one term's row (after an action) instead of rebuilding the
+        whole tab — the rebuild is ~28 ms/row, so removing one widget is instant."""
+        entry = self._rows.pop(term_id, None)
+        if entry:
+            for widget in entry:
+                try:
+                    widget.destroy()
+                except tk.TclError:
+                    pass
+        if self._pending:                       # keep the backing list in sync
+            cands, actions = self._pending
+            self._pending = ([c for c in cands if c.id != term_id], actions)
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def set_data(self, cands, actions_for):
         """Stash the rows to draw and mark dirty — but don't build widgets yet.
@@ -140,8 +155,11 @@ class _Bucket(ttk.Frame):
         limit = self._limits[which]
         for cand in cands[:limit]:
             contexts = self.window.c.contexts_for(cand.id)     # lazy, per drawn row
-            _Row(self.body, cand, actions_for(cand), contexts=contexts).pack(fill="x")
-            ttk.Separator(self.body, orient="horizontal").pack(fill="x")
+            row = _Row(self.body, cand, actions_for(cand), contexts=contexts)
+            row.pack(fill="x")
+            sep = ttk.Separator(self.body, orient="horizontal")
+            sep.pack(fill="x")
+            self._rows[cand.id] = [row, sep]
         hidden = len(cands) - limit
         if hidden > 0:
             more = min(_PAGE, hidden)
@@ -168,6 +186,7 @@ class _Bucket(ttk.Frame):
     def _render(self, cands, actions_for):
         for w in self.body.winfo_children():
             w.destroy()
+        self._rows = {}
         primary = [c for c in cands if c.tier == "primary"]
         secondary = [c for c in cands if c.tier == "secondary"]
 
@@ -209,6 +228,13 @@ class ReviewWindow:
         # Draw a tab only when it's shown, so acting on one tab never rebuilds the
         # others (the whole reason clicks were slow).
         self.nb.bind("<<NotebookTabChanged>>", lambda _e: self._show_current())
+        # One wheel binding for the whole window -> the visible tab (the per-canvas
+        # binding was unreliable; see _Bucket).
+        root.bind_all("<MouseWheel>", lambda e: self._current_bucket().scroll(e.delta))
+        # how each bucket's data is fetched, for the lazy stale-refresh after an action
+        self._fetch = {self.needs: (self.c.needs_definition, self._needs_actions),
+                       self.ready: (self.c.ready, self._ready_actions),
+                       self.carded: (self.c.carded, self._carded_actions)}
 
         bar = ttk.Frame(self.needs)
         bar.pack(side="bottom", fill="x", pady=4)
@@ -228,31 +254,47 @@ class ReviewWindow:
         return self.needs
 
     def _show_current(self):
-        self._current_bucket().ensure_rendered()
+        bucket = self._current_bucket()
+        if bucket.stale:                         # data changed since last shown
+            fetch, actions = self._fetch[bucket]
+            bucket.set_data(fetch(), actions)
+            bucket.stale = False
+        bucket.ensure_rendered()
 
     def refresh(self):
-        """Recompute the data once, stash it on each tab, draw only the visible one."""
+        """Full refresh — recompute every tab's data, draw only the visible one. Used
+        on open and after a bulk change (paste-enriched); single actions use `_do`."""
         needs = self.c.needs_definition()
         ready = self.c.ready()
-        carded = self.c.carded()
         self.needs.set_data(needs, self._needs_actions)
         self.ready.set_data(ready, self._ready_actions)
-        self.carded.set_data(carded, self._carded_actions)
+        self.carded.set_data(self.c.carded(), self._carded_actions)
+        self._status(needs, ready)
+        self._show_current()
 
+    def _status(self, needs=None, ready=None):
         counts = self.c.counts(needs=needs, ready=ready)
         nd, rd = counts["needs_def"], counts["ready"]
         self.status.config(
             text=f"Needs a definition: {nd[0]}   ·   Ready: {rd[0]}   ·   "
                  f"Carded: {counts['carded']}   ·   Known: {counts['known']}")
-        self._show_current()
 
     def _do(self, fn, term_id):
+        """A single-term action: apply it, then **surgically remove that one row** from
+        the visible tab and mark the others stale (they refetch when next shown). This
+        keeps a click near-instant instead of rebuilding ~25 rows (~700 ms)."""
         try:
             fn(term_id)
         except Exception as exc:
             log.exception("review action failed")
             messagebox.showerror("Blipfeed", str(exc))
-        self.refresh()
+            return
+        current = self._current_bucket()
+        current.remove(term_id)
+        for bucket in (self.needs, self.ready, self.carded):
+            if bucket is not current:
+                bucket.stale = True
+        self._status()
 
     def _needs_actions(self, cand):
         return [("Define", lambda c=cand: self._define(c)),
