@@ -62,6 +62,8 @@ class Candidate:
     count = property(lambda self: self.row["count"])
     meaning = property(lambda self: self.row["meaning"])
     note = property(lambda self: self.row["note"])
+    status = property(lambda self: self.row["status"])
+    manual = property(lambda self: bool(self.row["manual"]))
 
 
 class ReviewController:
@@ -76,18 +78,61 @@ class ReviewController:
         return [Candidate(c.row, c.tier, c.reasons)
                 for c in frequency.review_queue(self.conn, self.cfg, which)]
 
-    def needs_definition(self):
+    def _flat(self, rows):
+        """A plain (untiered) list — used by the status/session/manual/search tabs,
+        where there's no primary/secondary promotion split to make."""
+        return [Candidate(r, "primary") for r in rows]
+
+    def _by_dates(self, cands, dates):
+        """Keep only candidates observed on `dates` — the review-wide date filter,
+        applied to the classified (needs/ready) tabs that don't come from list_terms."""
+        if not dates:
+            return cands
+        ids = store.term_ids_on_dates(self.conn, dates)
+        return [c for c in cands if c.id in ids]
+
+    def _list(self, dates=None, **filters):
+        return self._flat(store.list_terms(
+            self.conn, language=self.cfg.language, dates=dates, **filters))
+
+    def needs_definition(self, dates=None):
         """The loud bucket: real words with no meaning yet."""
-        return self._candidates("needs_def")
+        return self._by_dates(self._candidates("needs_def"), dates)
 
-    def ready(self):
+    def ready(self, dates=None):
         """Have a meaning; one click from a card (many auto-card on their own)."""
-        return self._candidates("ready")
+        return self._by_dates(self._candidates("ready"), dates)
 
-    def carded(self):
+    def carded(self, dates=None):
         """Already in the Blip deck — shown so UI stragglers can be pulled back out."""
-        return [Candidate(r, "primary")
-                for r in store.carded_terms(self.conn, self.cfg.language)]
+        return self._list(dates=dates, statuses=("carded",))
+
+    def ignored(self, dates=None):
+        """Words you set aside — with the option to bring any back."""
+        return self._list(dates=dates, statuses=("ignored",))
+
+    def known(self, dates=None):
+        """Words marked known (from Blip, a level list, or by hand)."""
+        return self._list(dates=dates, statuses=("known",))
+
+    def manual_terms(self, dates=None):
+        """Everything gathered by hand in the chip picker."""
+        return self._list(dates=dates, manual=True)
+
+    def latest_session(self):
+        """Every word from the most recent sitting, whatever its status."""
+        sid = store.latest_session_id(self.conn)
+        return self._flat(store.list_terms(self.conn, language=self.cfg.language,
+                                           session_id=sid)) if sid else []
+
+    def search(self, query, dates=None):
+        """Find a specific word to manage. Empty query -> nothing (avoid dumping all)."""
+        if not query or not query.strip():
+            return []
+        return self._list(dates=dates, search=query, order="count", limit=200)
+
+    def available_dates(self):
+        return store.observation_dates(self.conn)
 
     def contexts_for(self, term_id, limit=2):
         """Mined context sentences for one term — fetched lazily, per rendered row."""
@@ -128,6 +173,12 @@ class ReviewController:
 
     def mark_known(self, term_id):
         store.set_status(self.conn, term_id, "known")
+        self.conn.commit()
+
+    def revive(self, term_id):
+        """Put an ignored / known word back in play (status -> new). Powers both
+        'Un-ignore' and 'Don't know' — the queue re-evaluates it from there."""
+        store.set_status(self.conn, term_id, "new")
         self.conn.commit()
 
     def set_meaning(self, term_id, meaning, note=None):

@@ -204,3 +204,76 @@ def test_enrich_then_accept_round_trip(conn, tmp_path, monkeypatch):
     w = deck["words"][0]
     assert w["term"] == "无畏" and w["meaning"] == "Valorant"
     assert w["reading"] == "wú wèi"                  # reading rode along
+
+
+# --- the new tabs: session / manual / ignored / known / search / dates -------
+def make_term(conn, term, *, meaning=None, status=None, manual=False, sid=None):
+    snap = store.add_snapshot(conn, sid, source="r") if sid else None
+    tid = store.observe(conn, term=term, session_id=sid, snapshot_id=snap,
+                        create_fields={"meaning": meaning} if meaning else None,
+                        manual=manual)
+    if status:
+        store.set_status(conn, tid, status)
+        conn.commit()
+    return tid
+
+
+def test_ignored_and_known_tabs(conn):
+    make_term(conn, "无畏", status="ignored")
+    make_term(conn, "你好", meaning="hello", status="known")
+    c = ReviewController(conn, Config())
+    assert [x.term for x in c.ignored()] == ["无畏"]
+    assert [x.term for x in c.known()] == ["你好"]
+    assert c.ignored()[0].status == "ignored"
+
+
+def test_revive_puts_word_back(conn):
+    tid = make_term(conn, "无畏", status="ignored")
+    c = ReviewController(conn, Config())
+    c.revive(tid)
+    assert store.get_term(conn, tid)["status"] == "new"
+    assert c.ignored() == []
+
+
+def test_card_from_ignored(conn, tmp_path, monkeypatch):
+    from blipfeed import blip_link
+    monkeypatch.setattr(blip_link, "deck_dir", lambda: tmp_path)
+    tid = make_term(conn, "无畏", meaning="Valorant", status="ignored")
+    ReviewController(conn, Config()).accept(tid)     # card straight from ignored
+    assert store.get_term(conn, tid)["status"] == "carded"
+
+
+def test_manual_tab(conn):
+    make_term(conn, "万魂幡", manual=True)
+    make_term(conn, "学习")                           # auto
+    assert [x.term for x in ReviewController(conn, Config()).manual_terms()] == ["万魂幡"]
+
+
+def test_latest_session_tab(conn):
+    s1 = store.start_session(conn, "old")
+    make_term(conn, "学习", sid=s1)
+    s2 = store.start_session(conn, "new")
+    make_term(conn, "中文", meaning="Chinese", sid=s2)
+    make_term(conn, "电影", status="ignored", sid=s2)
+    terms = {x.term for x in ReviewController(conn, Config()).latest_session()}
+    assert terms == {"中文", "电影"}                   # every status from the latest sitting
+
+
+def test_search_tab(conn):
+    make_term(conn, "学习", meaning="to study")
+    make_term(conn, "中文", meaning="Chinese")
+    c = ReviewController(conn, Config())
+    assert [x.term for x in c.search("学")] == ["学习"]
+    assert c.search("") == []                          # empty -> nothing
+
+
+def test_date_filter_across_tabs(conn):
+    sid = store.start_session(conn, "s")
+    snap = store.add_snapshot(conn, sid, source="r")
+    store.observe(conn, term="无畏", session_id=sid, snapshot_id=snap)
+    store.set_status(conn, store.find_term(conn, "无畏")["id"], "ignored")
+    conn.commit()
+    c = ReviewController(conn, Config())
+    today = c.available_dates()[0]
+    assert [x.term for x in c.ignored(dates=[today])] == ["无畏"]
+    assert c.ignored(dates=["1999-01-01"]) == []       # a day with no data
