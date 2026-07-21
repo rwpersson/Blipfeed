@@ -161,6 +161,8 @@ class DashboardWindow:
         self.review_btn.pack(side="left", fill="x", expand=True)
         t.button(row, "Sync known", self._sync_known, kind="ghost", big=True,
                  padx=14).pack(side="left", padx=(8, 0))
+        t.button(row, "📊", self._open_stats, kind="ghost", big=True,
+                 padx=12).pack(side="left", padx=(8, 0))
         t.button(row, "⚙", self._open_settings, kind="ghost", big=True,
                  padx=12).pack(side="left", padx=(8, 0))
 
@@ -231,6 +233,9 @@ class DashboardWindow:
 
     def _open_review(self):
         subprocess.Popen([sys.executable, "-m", "blipfeed.review"])
+
+    def _open_stats(self):
+        subprocess.Popen([sys.executable, "-m", "blipfeed.ui.stats_window"])
 
     def _open_settings(self):
         # in-process (Toplevel), so a Save mutates the config we hold and takes effect

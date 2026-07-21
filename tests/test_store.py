@@ -160,3 +160,59 @@ def test_last_snapshot_hash(conn):
     store.add_snapshot(conn, sid, source="r1", image_hash="aaa")
     store.add_snapshot(conn, sid, source="r1", image_hash="bbb")
     assert store.last_snapshot_hash(conn, sid, "r1") == "bbb"
+
+
+# --- history / stats aggregates + carded_at migration (v2) -------------------
+def test_carded_at_set_and_cleared(conn):
+    tid = store.observe(conn, term="学习", create_fields={"meaning": "study"})
+    store.mark_carded(conn, tid, "immersion", "1")
+    assert store.get_term(conn, tid)["carded_at"] is not None
+    store.uncard(conn, tid)
+    assert store.get_term(conn, tid)["carded_at"] is None
+
+
+def test_summary_counts(conn):
+    store.observe(conn, term="学习", create_fields={"meaning": "study"})
+    store.seed_known_bulk(conn, ["你好", "谢谢"])
+    s = store.summary(conn)
+    assert s["known"] if False else s["by_status"]["known"] == 2
+    assert s["terms"] == 3
+    assert s["observations"] == 1
+    assert s["sessions"] == 0
+
+
+def test_daily_activity_covers_every_day(conn):
+    sid = store.start_session(conn, "s")
+    snap = store.add_snapshot(conn, sid, source="r")
+    store.observe(conn, term="学习", session_id=sid, snapshot_id=snap,
+                  create_fields={"meaning": "study"})
+    days = store.daily_activity(conn, days=7)
+    assert len(days) == 7                              # continuous range, gaps = 0
+    assert days[-1]["seen"] >= 1                       # today has the sighting + new
+    assert days[-1]["new"] >= 1
+    assert all(set(d) == {"date", "seen", "new", "cards"} for d in days)
+
+
+def test_daily_activity_counts_cards_today(conn):
+    tid = store.observe(conn, term="学习", create_fields={"meaning": "study"})
+    store.mark_carded(conn, tid, "immersion", "1")
+    assert store.daily_activity(conn, days=3)[-1]["cards"] == 1
+
+
+def test_sessions_history(conn):
+    sid = store.start_session(conn, "video A")
+    for _ in range(3):
+        snap = store.add_snapshot(conn, sid, source="r")
+        store.observe(conn, term="学习", session_id=sid, snapshot_id=snap)
+    rows = store.sessions_history(conn)
+    assert rows[0]["source_label"] == "video A"
+    assert rows[0]["snaps"] == 3 and rows[0]["words"] == 3
+
+
+def test_top_terms_ranked(conn):
+    for _ in range(5):
+        store.observe(conn, term="中文")
+    for _ in range(2):
+        store.observe(conn, term="学习")
+    top = store.top_terms(conn, limit=5)
+    assert top[0]["term"] == "中文" and top[0]["count"] == 5

@@ -32,7 +32,7 @@ from .logging_setup import get
 
 log = get("store")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STATUSES = ("new", "queued", "carded", "known", "ignored")
 
 # Fields a caller may set when a term is first created (whitelist — never format a
@@ -143,7 +143,14 @@ def _migrate(conn):
     version = int(row[0]) if row else 0
     if version < 1:
         conn.executescript(_DDL_V1)
-    # future: if version < 2: conn.executescript(_DDL_V2) ...
+    if version < 2:
+        # carded_at: when a term became a card, for the stats/history charts. Added
+        # by ALTER (not in _DDL_V1) so existing stores gain it too; existing carded
+        # terms keep NULL here — history simply starts from now for them.
+        try:
+            conn.execute("ALTER TABLE terms ADD COLUMN carded_at TEXT")
+        except sqlite3.OperationalError:
+            pass                                 # already present
     if version < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO meta(key,value) VALUES('schema_version',?) "
@@ -403,8 +410,8 @@ def uncard(conn, term_id, status="ignored"):
     """
     if status not in STATUSES:
         raise ValueError(f"unknown status {status!r}")
-    conn.execute("UPDATE terms SET status=?, card_deck=NULL, card_id=NULL "
-                 "WHERE id=?", (status, term_id))
+    conn.execute("UPDATE terms SET status=?, card_deck=NULL, card_id=NULL, "
+                 "carded_at=NULL WHERE id=?", (status, term_id))
 
 
 def carded_terms(conn, language=None):
@@ -427,8 +434,8 @@ def mark_carded(conn, term_id, deck, card_id):
         raise AlreadyCarded(f"term {term_id} is already carded")
     if row["meaning"] is None:
         raise ValueError(f"term {term_id} has no meaning — cannot card it")
-    conn.execute("UPDATE terms SET status='carded', card_deck=?, card_id=? WHERE id=?",
-                 (deck, card_id, term_id))
+    conn.execute("UPDATE terms SET status='carded', card_deck=?, card_id=?, "
+                 "carded_at=? WHERE id=?", (deck, card_id, _now(), term_id))
 
 
 # --- the mining queue: two buckets + the long tail ----------------------------
@@ -468,6 +475,66 @@ def contexts_for(conn, term_id, limit=3):
 
 
 # --- maintenance --------------------------------------------------------------
+# --- history / stats aggregates ----------------------------------------------
+def summary(conn, language=None):
+    """Lifetime totals for the stats view."""
+    by_status = {r["status"]: r["n"] for r in conn.execute(
+        "SELECT status, COUNT(*) AS n FROM terms GROUP BY status")}
+    obs = conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    return {"by_status": by_status, "terms": sum(by_status.values()),
+            "observations": obs, "sessions": sessions}
+
+
+def daily_activity(conn, days=30):
+    """Per-day (UTC) words seen, new words discovered, and cards made — for the chart.
+
+    Three cheap grouped queries keyed on the date prefix of the ISO timestamp, merged
+    onto a continuous day range so gaps show as zero (a chart needs every day present).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    start = (today - timedelta(days=days - 1)).isoformat()
+
+    def by_day(sql):
+        return {r[0]: r[1] for r in conn.execute(sql, (start,))}
+
+    seen = by_day("SELECT substr(ts,1,10) d, COUNT(*) FROM observations "
+                  "WHERE ts>=? GROUP BY d")
+    fresh = by_day("SELECT substr(first_seen,1,10) d, COUNT(*) FROM terms "
+                   "WHERE first_seen>=? GROUP BY d")
+    cards = by_day("SELECT substr(carded_at,1,10) d, COUNT(*) FROM terms "
+                   "WHERE carded_at>=? GROUP BY d")
+    out = []
+    for i in range(days):
+        day = (today - timedelta(days=days - 1 - i)).isoformat()
+        out.append({"date": day, "seen": seen.get(day, 0),
+                    "new": fresh.get(day, 0), "cards": cards.get(day, 0)})
+    return out
+
+
+def sessions_history(conn, limit=25):
+    """Recent immersion sittings with their snapshot + word counts, newest first."""
+    return conn.execute(
+        "SELECT s.id, s.started, s.ended, s.source_label, s.mode,"
+        " (SELECT COUNT(*) FROM snapshots sn WHERE sn.session_id=s.id) AS snaps,"
+        " (SELECT COUNT(*) FROM observations o WHERE o.session_id=s.id) AS words"
+        " FROM sessions s ORDER BY s.id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def top_terms(conn, limit=25, language=None):
+    """The most-seen words overall, whatever their status."""
+    sql = "SELECT term, count, meaning, status FROM terms"
+    params = []
+    if language:
+        sql += " WHERE language=?"
+        params.append(language)
+    sql += " ORDER BY count DESC, term LIMIT ?"
+    params.append(limit)
+    return conn.execute(sql, params).fetchall()
+
+
 def recount(conn):
     """Rebuild the denormalized count / ocr_conf_max caches from the ledger."""
     conn.execute(
