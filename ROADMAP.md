@@ -209,7 +209,17 @@ against a list that is already worth looking at):**
   seed `status=known` from an HSK level, a word list, or Blip's graduated words
   (`state.json`).
 
-## Phase 6 — Control surface + sessions ◐ MOSTLY DONE
+## Phase 6 — Control surface + sessions ◐ (dashboard done; tray next)
+
+**The dashboard is the home now.** `python -m blipfeed` opens it (was: a headless
+console loop). One window ties everything together — Start/Stop, Auto/Manual mode,
+auto-card on/off, the capture region, live session + library stats, and Review — with
+AUTO capture running headless on a background thread behind it (Decisions #6).
+`dashboard.py` holds the logic (no Tk, 14 tests): start/stop lifecycle, toggles that
+persist to config, one-shot manual capture, and cheap stats that match the review
+window's primary counts. The window is a dumb shell; Review launches as a separate
+process (one Tk root per process, Blip gotcha #13). Terminal commands (--status/
+--clean/--known-*) still work with no window.
 
 Auto mode is headless, so its control surface is a **hotkey + tray**, not a window
 (CLAUDE.md Decisions #6). Everything the user deliberately opens is an ordinary

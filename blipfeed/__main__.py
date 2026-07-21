@@ -1,25 +1,18 @@
-"""Blipfeed entry point — run an immersion capture session.
+"""Blipfeed entry point.
 
-    python -m blipfeed                  # AUTO: headless capture on a timer
-    python -m blipfeed --manual         # MANUAL: hotkey grabs a frame, you pick chips
-    python -m blipfeed --no-picker      # skip the region confirmation (scripted runs)
-    python -m blipfeed --once           # a single tick, then exit (diagnostics)
+    python -m blipfeed                  # open the dashboard (the home window)
     python -m blipfeed --status [--all] # what's in the store; capture nothing
     python -m blipfeed --clean [--yes]  # re-judge past cards against today's gate
     python -m blipfeed --known-sync     # learn what you already know, from Blip
     python -m blipfeed --known-import F # bulk-import a level list (HSK, frequency…)
     python -m blipfeed --known-forget W # put a word back in play
 
-The region picker opens on **every** start, showing the saved region so you can see
-where mining will point and adjust it. Esc keeps it and proceeds.
-
-AUTO mode draws nothing and says nothing on screen (Decisions #6) — the console
-readout is for when you're watching, and the hotkeys are how you drive it while a game
-has focus. Cards land in Blip's deck; **Blip picks them up on its next launch**, not
-live.
+With no arguments this opens the **dashboard** (`ui/dashboard_window.py`), which is the
+home for everything: Start/Stop, mode + auto-card toggles, the capture region, live
+stats, and Review. AUTO capture runs headless on a background thread behind it
+(Decisions #6). The commands above stay for the terminal — no window, capture nothing.
 """
 import sys
-import threading
 
 if __package__ in (None, ""):                       # run-as-a-script guard
     from pathlib import Path
@@ -29,56 +22,10 @@ if __package__ in (None, ""):                       # run-as-a-script guard
 
     __package__ = "blipfeed"
 
-from . import capture, config as config_mod, hotkeys, session as session_mod, store  # noqa: E402
+from . import capture, config as config_mod, store  # noqa: E402
 from .logging_setup import get  # noqa: E402
 
 log = get("main")
-
-
-def _fmt_tick(result):
-    if result.error:
-        return f"  ! tick failed: {result.error}"
-    if result.skipped:
-        return "  · unchanged — skipped"
-    bits = [f"{result.lines} on screen"]
-    if result.chrome:
-        bits.append(f"{result.chrome} chrome")
-    bits.append(f"{result.observations} words")
-    line = "  · " + ", ".join(bits)
-    if result.promoted:
-        line += f"   ★ carded: {', '.join(result.promoted)}"
-    return line
-
-
-def _resolve_region(cfg, capturer, argv):
-    """The region to capture — confirmed visually every time mining starts.
-
-    The picker **always opens**, pre-loaded with the saved region drawn dashed. A
-    saved region you can't see is a region you don't trust: you'd have no idea where
-    mining was pointed, or that the window you're capturing has since moved. So every
-    start is a chance to look and adjust.
-
-    Esc keeps the current region and proceeds. `--no-picker` skips the step entirely
-    for scripted runs.
-    """
-    saved = cfg.region()
-    if "--no-picker" in argv:
-        region = saved or capturer.bottom_third(cfg.monitor)
-        print(f"region (picker skipped): {region.label()}")
-        return region
-
-    from .ui.region import pick_region
-    picked = pick_region(current=saved)
-    if picked is not None:
-        cfg.set_region(picked).save()
-        print(f"region saved: {picked.label()}")
-        return picked
-    if saved is not None:
-        print(f"keeping the current region: {saved.label()}")
-        return saved
-    region = capturer.bottom_third(cfg.monitor)
-    print(f"no region chosen — using the bottom third: {region.label()}")
-    return region
 
 
 def _clean(conn, cfg, argv):
@@ -211,116 +158,24 @@ def main(argv=None):
     cfg = config_mod.load()
     for problem in cfg.validate():
         print(f"config problem: {problem}")
-    if "--manual" in argv:
-        cfg.set("mode", "manual")
 
-    conn = store.connect()
-    if "--status" in argv:
-        return _show_status(conn, cfg, argv)
-    if "--clean" in argv:
-        return _clean(conn, cfg, argv)
-    if any(a.startswith("--known") for a in argv):
-        return _known(conn, cfg, argv)
+    # Terminal commands: do their thing and exit, no window.
+    if any(a in argv for a in ("--status", "--clean")) or             any(a.startswith("--known") for a in argv):
+        conn = store.connect()
+        try:
+            if "--status" in argv:
+                return _show_status(conn, cfg, argv)
+            if "--clean" in argv:
+                return _clean(conn, cfg, argv)
+            return _known(conn, cfg, argv)
+        finally:
+            conn.close()
 
-    capturer = capture.Capturer()
-    region = _resolve_region(cfg, capturer, argv)
-
-    sess = session_mod.CaptureSession(conn, cfg, region, capturer=capturer,
-                                      label=f"session {region.label()}")
-    stop = threading.Event()
-
-    # Only one picker window at a time: each creates its own Tk root, and a second
-    # live interpreter in one process is the bug Blip documents (gotcha #13).
-    ui_lock = threading.Lock()
-
-    def _in_ui_thread(fn, what):
-        """Run a window off the hotkey thread (the pump must never block), and never
-        two at once."""
-        def wrapper():
-            if not ui_lock.acquire(blocking=False):
-                print(f"\n  ({what} ignored — a window is already open)", flush=True)
-                return
-            try:
-                fn()
-            except Exception:
-                log.exception("%s failed", what)
-            finally:
-                ui_lock.release()
-        threading.Thread(target=wrapper, daemon=True).start()
-
-    def do_manual():
-        print("\n  capturing — pick your words…", flush=True)
-        _in_ui_thread(lambda: _run_manual(sess), "manual capture")
-
-    def do_toggle():
-        print("\nstopping…")
-        stop.set()
-
-    def do_region():
-        def redraw():
-            from .ui.region import pick_region
-            picked = pick_region(current=sess.region)
-            if picked is None:
-                return
-            sess.region = picked
-            sess.detector.reset(sess.source)   # new region, old frame hash is moot
-            sess.filter.reset()                # and its chrome is different chrome
-            cfg.set_region(picked).save()
-            print(f"\n  region is now {picked.label()}", flush=True)
-        _in_ui_thread(redraw, "redraw region")
-
-    listener = hotkeys.HotkeyListener({
-        cfg.hotkey_toggle: do_toggle,
-        cfg.hotkey_manual: do_manual,
-        cfg.hotkey_region: do_region,
-    })
-    listener.start()
-    listener.wait_ready()
-    for combo, why in listener.failed.items():
-        print(f"hotkey {combo} unavailable: {why}")
-
-    print(f"Blipfeed — {cfg.mode.upper()} mode")
-    print(f"  region   {region.label()}")
-    print(f"  every    {cfg.interval_seconds}s   (N={cfg.min_count}, "
-          f"K={cfg.max_promotions_per_snapshot}, "
-          f"auto_card={'on' if cfg.auto_card else 'off'})")
-    print(f"  hotkeys  {cfg.hotkey_toggle} stop · {cfg.hotkey_manual} capture now")
-    print("  cards go to Blip; Blip shows them on its NEXT launch.\n")
-
-    try:
-        if "--once" in argv:
-            print(_fmt_tick(sess.tick()))
-        elif cfg.mode == "manual":
-            print(f"Manual mode: press {cfg.hotkey_manual} to capture. Ctrl+C to quit.")
-            while not stop.is_set():
-                stop.wait(0.5)
-        else:
-            sess.run(stop_event=stop, on_tick=lambda r: print(_fmt_tick(r), flush=True))
-    except KeyboardInterrupt:
-        print("\ninterrupted")
-    finally:
-        listener.stop()
-        summary = sess.summary()
-        sess.close()
-        conn.close()
-        print(f"\nsession {summary['session_id']}: {summary['ticks']} ticks, "
-              f"{summary['observations']} words seen, "
-              f"{len(summary['promoted'])} carded"
-              + (f" ({', '.join(summary['promoted'])})" if summary["promoted"] else ""))
-        print("Review what was mined:  python -m blipfeed --status")
+    # Default: the dashboard is home. AUTO capture runs headless behind it.
+    from .dashboard import DashboardController
+    from .ui.dashboard_window import run
+    run(DashboardController(cfg))
     return 0
-
-
-def _run_manual(sess):
-    from .ui.pick import pick_tokens
-    try:
-        img, lines = sess.capture_lines()
-        picked = pick_tokens(img, lines)
-        if picked:
-            sess.record_manual(picked["tokens"], context=picked.get("context", ""))
-            print(f"  + recorded: {', '.join(picked['tokens'])}", flush=True)
-    except Exception:
-        log.exception("manual capture failed")
 
 
 if __name__ == "__main__":
