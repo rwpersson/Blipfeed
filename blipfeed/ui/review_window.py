@@ -22,6 +22,7 @@ if __package__ in (None, ""):                       # run-as-a-script guard
 
     __package__ = "blipfeed.ui"
 
+from . import theme as _t  # noqa: E402
 from ..logging_setup import get  # noqa: E402
 
 log = get("ui.review")
@@ -29,12 +30,11 @@ log = get("ui.review")
 _CJK_FONT = ("Microsoft YaHei", 11)
 _SMALL = ("Segoe UI", 9)
 
-# Colours for the clam theme's light background — dark, readable text; the previous
-# values were picked for the dark pick-window and were near-invisible here.
-_TEXT = "#1b1b1b"        # the meaning — primary readable text
-_MUTED = "#586170"       # reading + count
-_WARN = "#8a5a1a"        # why a candidate was filtered
-_CTX = "#4b5563"         # mined context sentence
+# From the shared theme (dark). ttk widgets are styled globally in run().
+_TEXT = _t.INK           # the meaning — primary readable text
+_MUTED = _t.MUTED        # reading + count
+_WARN = _t.WARNING       # why a candidate was filtered
+_CTX = _t.FAINT          # mined context sentence
 _WRAP = 440              # keeps text clear of the reserved button column
 _PAGE = 25               # rows drawn at once (~8 ms/row of ttk widget-building is the
                          # whole cost). You act on the top of a frequency-ranked list,
@@ -95,7 +95,7 @@ class _Bucket(ttk.Frame):
         self._pending = None            # (cands, actions_for) awaiting a render
         self._dirty = True              # needs (re)drawing before it's shown
 
-        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.canvas = tk.Canvas(self, highlightthickness=0, bg=_t.BG)
         vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.body = ttk.Frame(self.canvas)
         self.body.bind("<Configure>", lambda _e: self.canvas.configure(
@@ -173,7 +173,7 @@ class ReviewWindow:
         root.title("Blipfeed — review")
         root.geometry("820x640")
 
-        self.status = ttk.Label(root, text="", padding=(10, 6), foreground="#7a8291")
+        self.status = ttk.Label(root, text="", padding=(10, 6), foreground=_t.MUTED)
         self.status.pack(side="bottom", fill="x")
 
         self.nb = ttk.Notebook(root)
@@ -345,10 +345,8 @@ class _PasteDialog(tk.Toplevel):
 def run(controller):
     """Blocking: open the review window on its own Tk root."""
     root = tk.Tk()
-    try:
-        ttk.Style().theme_use("clam")
-    except tk.TclError:
-        pass
+    _t.style_ttk(root)                    # dark amber ttk styling
+    _t.apply_icon(root)
     ReviewWindow(root, controller)
     root.mainloop()
 

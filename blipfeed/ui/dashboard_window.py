@@ -1,13 +1,8 @@
 """The dashboard window — Blipfeed's home. A dumb shell over DashboardController.
 
-All logic lives in dashboard.py (tested, no Tk); this draws it and forwards clicks.
-The one architectural rule it enforces: **one Tk root per process** (Blip gotcha #13),
-so windows the user *browses* (Review) launch as a separate process, while the modal
-bits of a capture flow (the region picker, the manual chip picker) are Toplevels of
-this root and return a value inline.
-
-Global hotkeys work while a game has focus; their callbacks marshal onto the Tk thread
-with `after`, since the hotkey pump runs on its own thread.
+Logic lives in dashboard.py (tested, no Tk); this draws it with the shared theme and
+forwards clicks. One Tk root per process (Blip gotcha #13), so Review launches as a
+separate process while the region/chip pickers are Toplevels that return inline.
 """
 import subprocess
 import sys
@@ -22,27 +17,12 @@ if __package__ in (None, ""):                       # run-as-a-script guard
 
     __package__ = "blipfeed.ui"
 
+from . import theme as t  # noqa: E402
 from .. import hotkeys as hotkeys_mod  # noqa: E402
 from ..dashboard import NoRegion  # noqa: E402
 from ..logging_setup import get  # noqa: E402
 
 log = get("ui.dashboard")
-
-_BG = "#14171c"
-_CARD = "#1b2027"
-_INK = "#e8eef6"
-_DIM = "#8b95a3"
-_ACCENT = "#2f6fed"
-_GOOD = "#37c26b"
-_STOP = "#e0524d"
-_ON = "#2f6fed"
-_OFF = "#2b323c"
-
-_F_TITLE = ("Segoe UI Semibold", 18)
-_F_H = ("Segoe UI Semibold", 11)
-_F = ("Segoe UI", 10)
-_F_BIG = ("Segoe UI Semibold", 13)
-_F_NUM = ("Segoe UI Semibold", 20)
 
 
 class DashboardWindow:
@@ -50,21 +30,23 @@ class DashboardWindow:
         self.root = root
         self.c = controller
         self._busy = threading.Lock()
+        self._pulse_on = False
+        self._toast_job = None
         root.title("Blipfeed")
-        root.configure(bg=_BG)
+        root.configure(bg=t.BG)
         root.minsize(440, 320)
+        t.apply_icon(root)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # A scrollable body, so content can never be clipped at any window size
-        # (the whole point of this fix). All content is parented to self.body.
-        outer = tk.Frame(root, bg=_BG)
+        # scrollable body so content is never clipped; sized to content afterwards
+        outer = tk.Frame(root, bg=t.BG)
         outer.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(outer, bg=_BG, highlightthickness=0)
+        self.canvas = tk.Canvas(outer, bg=t.BG, highlightthickness=0)
         vsb = tk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.body = tk.Frame(self.canvas, bg=_BG)
+        self.body = tk.Frame(self.canvas, bg=t.BG)
         self._body_win = self.canvas.create_window((0, 0), window=self.body,
                                                    anchor="nw")
         self.body.bind("<Configure>", lambda _e: self.canvas.configure(
@@ -80,18 +62,16 @@ class DashboardWindow:
         self._build_toggles()
         self._build_region()
         self._build_stats()
+        self._build_hint()
         self._build_actions()
-        tk.Label(self.body, text="New cards appear in Blip on its next launch.",
-                 bg=_BG, fg=_DIM, font=("Segoe UI", 9)).pack(pady=(6, 12))
+        self._build_footer()
 
-        # Size the window to the real content height, so nothing is cut off out of
-        # the box; the scrollbar covers anything smaller.
         root.update_idletasks()
         want_h = self.body.winfo_reqheight() + 4
-        max_h = int(root.winfo_screenheight() * 0.92)
-        root.geometry(f"460x{min(want_h, max_h)}")
+        root.geometry(f"470x{min(want_h, int(root.winfo_screenheight() * 0.92))}")
 
         self._register_hotkeys()
+        self._pulse()
         self._refresh()
 
     def _wheel(self, event):
@@ -99,98 +79,92 @@ class DashboardWindow:
 
     # ------------------------------------------------------------- building
     def _build_header(self):
-        head = tk.Frame(self.body, bg=_BG)
-        head.pack(fill="x", padx=20, pady=(18, 6))
-        tk.Label(head, text="Blipfeed", bg=_BG, fg=_INK, font=_F_TITLE).pack(
+        head = tk.Frame(self.body, bg=t.BG)
+        head.pack(fill="x", padx=20, pady=(18, 8))
+        tk.Label(head, text="Blipfeed", bg=t.BG, fg=t.INK, font=t.FONT_TITLE).pack(
             side="left")
-        self.dot = tk.Label(head, text="○ Idle", bg=_BG, fg=_DIM, font=_F_H)
+        self.dot = tk.Label(head, text="○ Idle", bg=t.BG, fg=t.MUTED, font=t.FONT_H)
         self.dot.pack(side="right")
 
     def _build_primary(self):
-        wrap = tk.Frame(self.body, bg=_BG)
-        wrap.pack(fill="x", padx=20, pady=(6, 10))
-        self.primary = tk.Button(wrap, text="▶  Start", command=self._primary_click,
-                                 font=_F_BIG, bg=_ACCENT, fg="#fff", relief="flat",
-                                 bd=0, pady=12, cursor="hand2",
-                                 activebackground="#4880f5", activeforeground="#fff")
+        wrap = tk.Frame(self.body, bg=t.BG)
+        wrap.pack(fill="x", padx=20, pady=(4, 10))
+        self.primary = t.button(wrap, "▶  Start", self._primary_click,
+                                kind="primary", big=True, pady=13)
         self.primary.pack(fill="x")
 
-    def _card(self, title):
-        card = tk.Frame(self.body, bg=_CARD)
-        card.pack(fill="x", padx=20, pady=6)
-        if title:
-            tk.Label(card, text=title, bg=_CARD, fg=_DIM,
-                     font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14,
-                                                        pady=(10, 0))
-        return card
-
     def _build_toggles(self):
-        card = self._card("MODE")
-        row = tk.Frame(card, bg=_CARD)
+        card = t.card(self.body, "Mode")
+        row = tk.Frame(card, bg=t.SURFACE)
         row.pack(fill="x", padx=14, pady=(4, 12))
         self.mode_auto = self._seg(row, "Auto", lambda: self._set_mode("auto"))
         self.mode_manual = self._seg(row, "Manual", lambda: self._set_mode("manual"))
         self.mode_auto.pack(side="left")
         self.mode_manual.pack(side="left", padx=(6, 0))
-
         self.autocard_var = tk.BooleanVar()
         self.autocard = tk.Checkbutton(
             row, text="Auto-card", variable=self.autocard_var,
-            command=self._toggle_autocard, bg=_CARD, fg=_INK, selectcolor=_OFF,
-            activebackground=_CARD, activeforeground=_INK, font=_F,
-            highlightthickness=0, bd=0, cursor="hand2")
+            command=self._toggle_autocard, bg=t.SURFACE, fg=t.INK,
+            selectcolor=t.SURFACE_2, activebackground=t.SURFACE,
+            activeforeground=t.INK, font=t.FONT, highlightthickness=0, bd=0,
+            cursor="hand2")
         self.autocard.pack(side="right")
 
     def _seg(self, master, text, cmd):
-        return tk.Button(master, text=text, command=cmd, font=_F, relief="flat",
-                         bd=0, padx=16, pady=6, cursor="hand2",
-                         activeforeground="#fff")
+        return tk.Button(master, text=text, command=cmd, font=t.FONT, relief="flat",
+                         bd=0, padx=18, pady=6, cursor="hand2", activeforeground=t.INK)
 
     def _build_region(self):
-        card = self._card("CAPTURE REGION")
-        row = tk.Frame(card, bg=_CARD)
+        card = t.card(self.body, "Capture region")
+        row = tk.Frame(card, bg=t.SURFACE)
         row.pack(fill="x", padx=14, pady=(4, 12))
-        self.region_lbl = tk.Label(row, text="—", bg=_CARD, fg=_INK, font=_F,
+        self.region_lbl = tk.Label(row, text="—", bg=t.SURFACE, fg=t.INK, font=t.FONT,
                                    anchor="w")
         self.region_lbl.pack(side="left", fill="x", expand=True)
-        tk.Button(row, text="Change", command=self._change_region, font=_F,
-                  bg=_OFF, fg=_INK, relief="flat", bd=0, padx=12, pady=5,
-                  cursor="hand2", activebackground="#39424e").pack(side="right")
+        t.button(row, "Change", self._change_region, kind="ghost", padx=12,
+                 pady=5).pack(side="right")
 
     def _build_stats(self):
-        card = self._card("")
-        grid = tk.Frame(card, bg=_CARD)
+        card = t.card(self.body, "")
+        grid = tk.Frame(card, bg=t.SURFACE)
         grid.pack(fill="x", padx=14, pady=12)
         self.stat = {}
         rows = [("This session", ["snapshots", "words", "cards"]),
                 ("To review", ["needs a definition", "ready"]),
                 ("Library", ["known", "carded"])]
         for r, (label, keys) in enumerate(rows):
-            tk.Label(grid, text=label.upper(), bg=_CARD, fg=_DIM,
-                     font=("Segoe UI", 8, "bold")).grid(row=r * 2, column=0,
-                                                        columnspan=3, sticky="w",
-                                                        pady=(6, 0))
+            t.section_label(grid, label, bg=t.SURFACE).grid(
+                row=r * 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
             for col, key in enumerate(keys):
-                cell = tk.Frame(grid, bg=_CARD)
-                cell.grid(row=r * 2 + 1, column=col, sticky="w", padx=(0, 22))
-                num = tk.Label(cell, text="0", bg=_CARD, fg=_INK, font=_F_NUM)
+                cell = tk.Frame(grid, bg=t.SURFACE)
+                cell.grid(row=r * 2 + 1, column=col, sticky="w", padx=(0, 24))
+                num = tk.Label(cell, text="0", bg=t.SURFACE, fg=t.INK, font=t.FONT_NUM)
                 num.pack(anchor="w")
-                tk.Label(cell, text=key, bg=_CARD, fg=_DIM, font=("Segoe UI", 8)).pack(
-                    anchor="w")
+                tk.Label(cell, text=key, bg=t.SURFACE, fg=t.MUTED,
+                         font=t.FONT_SMALL).pack(anchor="w")
                 self.stat[key] = num
 
+    def _build_hint(self):
+        # empty-state / contextual guidance line
+        self.hint = tk.Label(self.body, text="", bg=t.BG, fg=t.MUTED, font=t.FONT,
+                             wraplength=420, justify="left")
+        self.hint.pack(fill="x", padx=22, pady=(2, 2))
+
     def _build_actions(self):
-        row = tk.Frame(self.body, bg=_BG)
+        row = tk.Frame(self.body, bg=t.BG)
         row.pack(fill="x", padx=20, pady=(8, 4))
-        self.review_btn = tk.Button(row, text="Review", command=self._open_review,
-                                    font=_F_BIG, bg=_OFF, fg=_INK, relief="flat",
-                                    bd=0, pady=9, cursor="hand2",
-                                    activebackground="#39424e")
+        self.review_btn = t.button(row, "Review", self._open_review, kind="ghost",
+                                   big=True)
         self.review_btn.pack(side="left", fill="x", expand=True)
-        tk.Button(row, text="Sync known", command=self._sync_known, font=_F,
-                  bg=_OFF, fg=_INK, relief="flat", bd=0, padx=14, pady=9,
-                  cursor="hand2", activebackground="#39424e").pack(
-            side="left", padx=(8, 0))
+        t.button(row, "Sync known", self._sync_known, kind="ghost", big=True,
+                 padx=14).pack(side="left", padx=(8, 0))
+
+    def _build_footer(self):
+        self.toast = tk.Label(self.body, text="", bg=t.BG, fg=t.MUTED,
+                              font=t.FONT_SMALL, wraplength=430)
+        self.toast.pack(pady=(8, 2))
+        tk.Label(self.body, text="New cards appear in Blip on its next launch.",
+                 bg=t.BG, fg=t.FAINT, font=t.FONT_SMALL).pack(pady=(0, 12))
 
     # --------------------------------------------------------------- actions
     def _primary_click(self):
@@ -213,15 +187,19 @@ class DashboardWindow:
             return
         try:
             from .pick import pick_tokens
-            self.dot.config(text="◐ Capturing…", fg=_ACCENT)
+            self._toast_now("Capturing…", t.ACCENT)
             self.root.update_idletasks()
-            self.c.capture_manual(
+            tokens = self.c.capture_manual(
                 lambda img, lines: pick_tokens(img, lines, master=self.root))
+            if tokens:
+                self._toast(f"Recorded {len(tokens)}: " + " ".join(tokens[:6]), "good")
+            else:
+                self._toast("Nothing recorded.")
         except NoRegion:
             self._change_region()
         except Exception as exc:
             log.exception("manual capture failed")
-            self._toast(str(exc))
+            self._toast(str(exc), "danger")
         finally:
             self._busy.release()
             self._refresh()
@@ -232,44 +210,69 @@ class DashboardWindow:
 
     def _toggle_autocard(self):
         self.c.set_auto_card(self.autocard_var.get())
-        self._refresh()
+        self._toast(f"Auto-card {'on' if self.autocard_var.get() else 'off'}.")
 
     def _change_region(self):
         from .region import pick_region
         region = pick_region(master=self.root, current=self.c.cfg.region())
         if region is not None:
-            was_running = self.c.running()
+            was = self.c.running()
             self.c.stop()
             self.c.set_region(region)
-            if was_running:
+            if was:
                 self.c.start()
+            self._toast(f"Region set to {region.label()}.")
         self._refresh()
 
     def _open_review(self):
-        # a browsing window -> its own process, so we never make a 2nd Tk root here
         subprocess.Popen([sys.executable, "-m", "blipfeed.review"])
 
     def _sync_known(self):
-        result = self.c.sync_known()
-        self._toast(f"Known words: {result['total_known']} "
-                    f"(from {result['deck_total']} Blip cards)")
+        r = self.c.sync_known()
+        self._toast(f"Known words: {t.commas(r['total_known'])} "
+                    f"(from {t.commas(r['deck_total'])} Blip cards).", "good")
         self._refresh()
+
+    # --------------------------------------------------------------- feedback
+    def _toast(self, text, kind="info"):
+        colour = {"good": t.GOOD, "danger": t.DANGER, "info": t.MUTED,
+                  t.ACCENT: t.ACCENT}.get(kind, t.MUTED)
+        self._toast_now(text, colour)
+        if self._toast_job:
+            self.root.after_cancel(self._toast_job)
+        self._toast_job = self.root.after(5000, self._restore_toast)
+
+    def _toast_now(self, text, colour):
+        self.toast.config(text=text, fg=colour)
+
+    def _restore_toast(self):
+        self._toast_job = None
+        self.toast.config(text="")
+
+    # --------------------------------------------------------------- pulse
+    def _pulse(self):
+        if self.c.running():
+            self._pulse_on = not self._pulse_on
+            self.dot.config(text="●  Capturing",
+                            fg=t.GOOD if self._pulse_on else t.GOOD_DIM)
+        else:
+            self.dot.config(text="○  Idle", fg=t.MUTED)
+        self.root.after(700, self._pulse)
 
     # --------------------------------------------------------------- refresh
     def _refresh(self):
         s = self.c.stats()
         running = s["running"]
-        if running:
-            self.dot.config(text="● Capturing", fg=_GOOD)
-        else:
-            self.dot.config(text="○ Idle", fg=_DIM)
 
         if s["mode"] == "manual":
-            self.primary.config(text="◉  Capture now", bg=_ACCENT)
+            t.style_button(self.primary, "primary")
+            self.primary.config(text="◉  Capture now")
         elif running:
-            self.primary.config(text="■  Stop", bg=_STOP, activebackground="#ec6b66")
+            t.style_button(self.primary, "danger")
+            self.primary.config(text="■  Stop")
         else:
-            self.primary.config(text="▶  Start", bg=_ACCENT, activebackground="#4880f5")
+            t.style_button(self.primary, "primary")
+            self.primary.config(text="▶  Start")
 
         self._paint_seg(self.mode_auto, s["mode"] == "auto")
         self._paint_seg(self.mode_manual, s["mode"] == "manual")
@@ -278,28 +281,39 @@ class DashboardWindow:
                                else "not set — click Change")
 
         sess = s["session"] or {}
-        self.stat["snapshots"].config(text=str(sess.get("ticks", 0)))
-        self.stat["words"].config(text=str(sess.get("observations", 0)))
-        self.stat["cards"].config(text=str(len(sess.get("promoted", []))))
-        self.stat["needs a definition"].config(text=str(s["needs_def"]))
-        self.stat["ready"].config(text=str(s["ready"]))
-        self.stat["known"].config(text=str(s["known"]))
-        self.stat["carded"].config(text=str(s["carded"]))
-        self.review_btn.config(
-            text=f"Review  ({s['needs_def'] + s['ready']})"
-            if (s["needs_def"] + s["ready"]) else "Review")
+        self.stat["snapshots"].config(text=t.commas(sess.get("ticks", 0)))
+        self.stat["words"].config(text=t.commas(sess.get("observations", 0)))
+        self.stat["cards"].config(text=t.commas(len(sess.get("promoted", []))))
+        self.stat["needs a definition"].config(text=t.commas(s["needs_def"]))
+        self.stat["ready"].config(text=t.commas(s["ready"]))
+        self.stat["known"].config(text=t.commas(s["known"]))
+        self.stat["carded"].config(text=t.commas(s["carded"]))
+        n_review = s["needs_def"] + s["ready"]
+        self.review_btn.config(text=f"Review  ({t.commas(n_review)})" if n_review
+                               else "Review")
 
-        # re-poll while running (live counters); idle can poll slowly
+        # the guidance line always reflects state; the toast is only for transient
+        # messages (sync done, recorded, errors) and clears itself
+        self.hint.config(text=self._hint(s),
+                         fg=t.ACCENT if s["region"] is None else t.MUTED)
+
         self.root.after(1000 if running else 2500, self._refresh)
 
-    def _paint_seg(self, btn, on):
-        btn.config(bg=_ON if on else _OFF, fg="#fff" if on else _INK,
-                   activebackground=_ON if on else "#39424e")
+    def _hint(self, s):
+        if s["region"] is None:
+            return "Pick a capture region to begin — click Change."
+        if s["mode"] == "manual":
+            return "Manual mode: press Capture now (or Ctrl+Alt+N) over the words."
+        if not s["running"] and s["seen_terms"] == 0:
+            return "Press Start and immerse — words you see will collect here."
+        if (s["needs_def"] + s["ready"]) == 0:
+            return "Nothing to review yet — keep immersing."
+        return f"{s['needs_def']} to define, {s['ready']} ready — open Review."
 
-    def _toast(self, text):
-        self.dot_after = getattr(self, "dot_after", None)
-        self.region_lbl.config(text=text)
-        self.root.after(4000, self._refresh)
+    def _paint_seg(self, btn, on):
+        btn.config(bg=t.ACCENT if on else t.SURFACE_2,
+                   fg=t.ACCENT_INK if on else t.INK,
+                   activebackground=t.ACCENT_HOVER if on else t.HOVER)
 
     # --------------------------------------------------------------- hotkeys
     def _register_hotkeys(self):

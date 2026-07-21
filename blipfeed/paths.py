@@ -36,6 +36,11 @@ def data_dir() -> Path:
     return APP_DIR / "data"
 
 
+def icon_file() -> Path:
+    """The app icon (.ico), bundled. Used by windows, the tray, and packaging."""
+    return data_dir() / "icon.ico"
+
+
 def cedict_file() -> Path:
     return data_dir() / "cedict" / "cedict_ts.u8"
 

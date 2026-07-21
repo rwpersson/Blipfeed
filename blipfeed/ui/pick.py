@@ -39,21 +39,23 @@ from ..logging_setup import get  # noqa: E402
 
 log = get("ui.pick")
 
-# --- palette ------------------------------------------------------------------
-_BG = "#14171c"
-_PANEL = "#1b2027"
-_INK = "#e8eef6"
-_DIM = "#8b95a3"
-_CHIP_BG = "#2a313b"
-_CHIP_FG = "#e8eef6"
-_CHIP_BORDER = "#3b4552"
-_CHIP_HOVER = "#59657a"
-_SEL_BG = "#2f6fed"
-_SEL_FG = "#ffffff"
-_SEL_BORDER = "#6b9bff"
-_ACCENT = "#2f6fed"
-_EDGE = "#8fa8cc"                # a word's border, at rest
-_EDGE_FILL = "#0e1b33"           # faint stipple tint -> the whole word is clickable
+# --- palette (from the shared theme) ------------------------------------------
+from . import theme as _t  # noqa: E402
+
+_BG = _t.BG
+_PANEL = _t.SURFACE
+_INK = _t.INK
+_DIM = _t.MUTED
+_CHIP_BG = _t.SURFACE_2
+_CHIP_FG = _t.INK
+_CHIP_BORDER = _t.BORDER
+_CHIP_HOVER = _t.MUTED
+_SEL_BG = _t.ACCENT
+_SEL_FG = _t.ACCENT_INK
+_SEL_BORDER = _t.ACCENT_HOVER
+_ACCENT = _t.ACCENT
+_EDGE = "#c7a86a"                # a word's border, at rest (warm, reads on any frame)
+_EDGE_FILL = "#2a2213"           # faint stipple tint -> the whole word is clickable
 
 _CHIP_FONT = ("Microsoft YaHei", 15, "bold")
 _UI_FONT = ("Segoe UI", 10)
@@ -174,7 +176,7 @@ class _Picker:
             vh = int(self.pil.height * fit_scale)
             self.canvas = tk.Canvas(frame, width=vw, height=vh, bg="#0c0e12",
                                     highlightthickness=1,
-                                    highlightbackground="#2b323c")
+                                    highlightbackground=_t.BORDER)
             hsb = tk.Scrollbar(frame, orient="horizontal", command=self.canvas.xview)
             vsb = tk.Scrollbar(frame, orient="vertical", command=self.canvas.yview)
             self.canvas.configure(xscrollcommand=hsb.set, yscrollcommand=vsb.set)
@@ -213,8 +215,8 @@ class _Picker:
 
     # --------------------------------------------------------------- widgets
     def _button(self, master, text, command, kind="ghost"):
-        bg, fg, active = ((_ACCENT, "#ffffff", "#4880f5") if kind == "accent"
-                          else ("#2b323c", _INK, "#39424e"))
+        bg, fg, active = ((_ACCENT, _t.ACCENT_INK, _t.ACCENT_HOVER) if kind == "accent"
+                          else (_t.SURFACE_2, _INK, _t.HOVER))
         return tk.Button(master, text=text, command=command, font=("Segoe UI", 10),
                          bg=bg, fg=fg, activebackground=active, activeforeground=fg,
                          relief="flat", bd=0, padx=14, pady=6, cursor="hand2")
@@ -436,14 +438,14 @@ class _TypeDialog(tk.Toplevel):
                  bg=_BG, fg=_INK, font=_UI_FONT, padx=14, pady=(12, 4)).pack(
             anchor="w")
         self.entry = tk.Entry(self, font=("Microsoft YaHei", 14), width=22,
-                              bg="#242a33", fg=_INK, insertbackground=_INK,
+                              bg=_t.SURFACE_2, fg=_INK, insertbackground=_INK,
                               relief="flat")
         self.entry.pack(padx=14, pady=(0, 10), ipady=4)
         row = tk.Frame(self, bg=_BG)
         row.pack(fill="x", padx=14, pady=(0, 12))
-        tk.Button(row, text="Add", command=self._ok, bg=_ACCENT, fg="#fff",
+        tk.Button(row, text="Add", command=self._ok, bg=_ACCENT, fg=_t.ACCENT_INK,
                   relief="flat", padx=14, pady=5, cursor="hand2").pack(side="right")
-        tk.Button(row, text="Cancel", command=self.destroy, bg="#2b323c", fg=_INK,
+        tk.Button(row, text="Cancel", command=self.destroy, bg=_t.SURFACE_2, fg=_INK,
                   relief="flat", padx=14, pady=5, cursor="hand2").pack(
             side="right", padx=6)
         self.entry.focus_set()
