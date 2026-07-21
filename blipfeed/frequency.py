@@ -54,11 +54,11 @@ def enrich_fields(term, language="zh-CN", idx=None):
 
 
 def ingest_line(conn, text, *, session_id=None, snapshot_id=None, confidence=None,
-                bbox=None, language="zh-CN", idx=None, tokens=None):
+                bbox=None, language="zh-CN", idx=None, tokens=None, manual=False):
     """Record every kept token in one recognized line. Returns the term ids.
 
     `tokens` overrides segmentation — that's how manual mode records exactly the
-    chips the user picked (including merged ones).
+    chips the user picked (including merged ones). `manual=True` flags those terms.
     """
     out = []
     for token in (tokens if tokens is not None else segment.segment(text)):
@@ -66,7 +66,8 @@ def ingest_line(conn, text, *, session_id=None, snapshot_id=None, confidence=Non
         term_id = store.observe(
             conn, term=canonical, language=language, session_id=session_id,
             snapshot_id=snapshot_id, context=text, confidence=confidence,
-            bbox=bbox, create_fields=enrich_fields(canonical, language, idx))
+            bbox=bbox, create_fields=enrich_fields(canonical, language, idx),
+            manual=manual)
         out.append(term_id)
     return out
 

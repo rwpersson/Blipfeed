@@ -32,7 +32,7 @@ from .logging_setup import get
 
 log = get("store")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STATUSES = ("new", "queued", "carded", "known", "ignored")
 
 # Fields a caller may set when a term is first created (whitelist — never format a
@@ -151,6 +151,13 @@ def _migrate(conn):
             conn.execute("ALTER TABLE terms ADD COLUMN carded_at TEXT")
         except sqlite3.OperationalError:
             pass                                 # already present
+    if version < 3:
+        # manual: this term was gathered by hand (the chip picker), for its own tab.
+        try:
+            conn.execute("ALTER TABLE terms ADD COLUMN manual INTEGER NOT NULL "
+                         "DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
     if version < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO meta(key,value) VALUES('schema_version',?) "
@@ -291,11 +298,13 @@ def upsert_term(conn, term, language="zh-CN", fields=None, ts=None):
 
 
 def observe(conn, *, term, language="zh-CN", session_id=None, snapshot_id=None,
-            context=None, confidence=None, bbox=None, ts=None, create_fields=None):
+            context=None, confidence=None, bbox=None, ts=None, create_fields=None,
+            manual=False):
     """Record one sighting of a term. Creates the term on first sight.
 
     Bumps the denormalized count / ocr_conf_max / last_seen. The append-only
-    observation is the ledger; count is the cache. Does NOT commit.
+    observation is the ledger; count is the cache. `manual=True` (the chip picker)
+    also flags the term so the review UI can list hand-gathered words. Does NOT commit.
     """
     ts = ts or _now()
     term_id, _ = upsert_term(conn, term, language, create_fields, ts=ts)
@@ -311,6 +320,8 @@ def observe(conn, *, term, language="zh-CN", session_id=None, snapshot_id=None,
         "   ELSE MAX(ocr_conf_max, :conf) END "
         "WHERE id = :tid",
         {"ts": ts, "conf": confidence, "tid": term_id})
+    if manual:
+        conn.execute("UPDATE terms SET manual = 1 WHERE id = ?", (term_id,))
     return term_id
 
 
@@ -436,6 +447,84 @@ def mark_carded(conn, term_id, deck, card_id):
         raise ValueError(f"term {term_id} has no meaning — cannot card it")
     conn.execute("UPDATE terms SET status='carded', card_deck=?, card_id=?, "
                  "carded_at=? WHERE id=?", (deck, card_id, _now(), term_id))
+
+
+# --- flexible term listing (drives the review tabs) --------------------------
+_ORDERS = {"count": "t.count DESC, t.term", "recent": "t.last_seen DESC, t.term",
+           "term": "t.term"}
+
+
+def list_terms(conn, *, language=None, statuses=None, has_meaning=None, manual=None,
+               session_id=None, dates=None, search=None, order="count", limit=None):
+    """One query, many views. Every review tab is this with different filters, so a new
+    tab is a new set of arguments — not a new code path.
+
+    - statuses: keep only these (e.g. ('ignored',), ('new','queued'))
+    - has_meaning: True (cardable) / False (needs a definition) / None (either)
+    - manual: True keeps only hand-gathered terms
+    - session_id / dates: keep terms observed in that session / on those UTC dates
+    - search: substring of term, alt, or meaning
+    All filters are EXISTS/index-friendly and compose, so it scales.
+    """
+    where, params = [], []
+    if language:
+        where.append("t.language = ?")
+        params.append(language)
+    if statuses:
+        where.append(f"t.status IN ({','.join('?' * len(statuses))})")
+        params.extend(statuses)
+    if has_meaning is True:
+        where.append("t.meaning IS NOT NULL")
+    elif has_meaning is False:
+        where.append("t.meaning IS NULL")
+    if manual:
+        where.append("t.manual = 1")
+    if session_id is not None:
+        where.append("EXISTS(SELECT 1 FROM observations o WHERE o.term_id = t.id "
+                     "AND o.session_id = ?)")
+        params.append(session_id)
+    if dates:
+        ph = ",".join("?" * len(dates))
+        where.append(f"EXISTS(SELECT 1 FROM observations o WHERE o.term_id = t.id "
+                     f"AND substr(o.ts, 1, 10) IN ({ph}))")
+        params.extend(dates)
+    if search:
+        where.append("(t.term LIKE ? OR t.alt LIKE ? OR t.meaning LIKE ?)")
+        like = f"%{search.strip()}%"
+        params.extend([like, like, like])
+
+    sql = "SELECT t.* FROM terms t"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY " + _ORDERS.get(order, _ORDERS["count"])
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return conn.execute(sql, params).fetchall()
+
+
+def latest_session_id(conn):
+    row = conn.execute("SELECT id FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
+    return row[0] if row else None
+
+
+def observation_dates(conn, limit=180):
+    """Distinct UTC dates that have any observation, newest first — the date picker's
+    options (only days you actually mined)."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT substr(ts, 1, 10) d FROM observations "
+        "ORDER BY d DESC LIMIT ?", (limit,))]
+
+
+def term_ids_on_dates(conn, dates):
+    """The set of term ids observed on any of `dates` — used to date-filter the
+    classified (needs/ready) tabs, which come from a different path."""
+    if not dates:
+        return None
+    ph = ",".join("?" * len(dates))
+    return {r[0] for r in conn.execute(
+        f"SELECT DISTINCT term_id FROM observations WHERE substr(ts, 1, 10) IN ({ph})",
+        list(dates))}
 
 
 # --- the mining queue: two buckets + the long tail ----------------------------

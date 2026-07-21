@@ -177,7 +177,7 @@ class CaptureSession:
             ids = frequency.ingest_line(
                 self.conn, context or "".join(tokens), tokens=tokens,
                 session_id=self.session_id, snapshot_id=snapshot_id,
-                language=self.cfg.language)
+                language=self.cfg.language, manual=True)
             self.conn.commit()
             self.total_observations += len(ids)
             return ids

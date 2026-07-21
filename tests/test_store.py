@@ -216,3 +216,60 @@ def test_top_terms_ranked(conn):
         store.observe(conn, term="学习")
     top = store.top_terms(conn, limit=5)
     assert top[0]["term"] == "中文" and top[0]["count"] == 5
+
+
+# --- flexible listing (drives the review tabs) + manual flag (schema v3) -----
+def test_manual_flag_set_on_manual_observe(conn):
+    store.observe(conn, term="学习")                       # auto
+    store.observe(conn, term="万魂幡", manual=True)         # by hand
+    assert store.find_term(conn, "学习")["manual"] == 0
+    assert store.find_term(conn, "万魂幡")["manual"] == 1
+
+
+def test_list_terms_by_status(conn):
+    a = store.observe(conn, term="学习", create_fields={"meaning": "study"})
+    store.mark_carded(conn, a, "immersion", "1")
+    store.seed_known_bulk(conn, ["你好"])
+    store.observe(conn, term="万魂幡")                      # new, no meaning
+    assert [r["term"] for r in store.list_terms(conn, statuses=("carded",))] == ["学习"]
+    assert [r["term"] for r in store.list_terms(conn, statuses=("known",))] == ["你好"]
+    assert "万魂幡" in [r["term"] for r in store.list_terms(conn, statuses=("new",))]
+
+
+def test_list_terms_has_meaning_and_manual(conn):
+    store.observe(conn, term="学习", create_fields={"meaning": "study"})
+    store.observe(conn, term="万魂幡", manual=True)
+    assert [r["term"] for r in store.list_terms(conn, has_meaning=True)] == ["学习"]
+    assert [r["term"] for r in store.list_terms(conn, has_meaning=False)] == ["万魂幡"]
+    assert [r["term"] for r in store.list_terms(conn, manual=True)] == ["万魂幡"]
+
+
+def test_list_terms_by_session(conn):
+    s1 = store.start_session(conn, "one")
+    snap1 = store.add_snapshot(conn, s1, source="r")
+    store.observe(conn, term="学习", session_id=s1, snapshot_id=snap1)
+    s2 = store.start_session(conn, "two")
+    snap2 = store.add_snapshot(conn, s2, source="r")
+    store.observe(conn, term="中文", session_id=s2, snapshot_id=snap2)
+    assert store.latest_session_id(conn) == s2
+    assert [r["term"] for r in store.list_terms(conn, session_id=s2)] == ["中文"]
+
+
+def test_list_terms_search(conn):
+    store.observe(conn, term="学习", create_fields={"meaning": "to study"})
+    store.observe(conn, term="中文", create_fields={"meaning": "Chinese"})
+    assert [r["term"] for r in store.list_terms(conn, search="学")] == ["学习"]
+    # matches meaning too
+    assert "中文" in [r["term"] for r in store.list_terms(conn, search="Chinese")]
+
+
+def test_list_terms_by_dates(conn, monkeypatch):
+    sid = store.start_session(conn, "s")
+    snap = store.add_snapshot(conn, sid, source="r")
+    store.observe(conn, term="学习", session_id=sid, snapshot_id=snap)
+    dates = store.observation_dates(conn)
+    assert len(dates) == 1
+    today = dates[0]
+    assert [r["term"] for r in store.list_terms(conn, dates=[today])] == ["学习"]
+    assert store.list_terms(conn, dates=["1999-01-01"]) == []
+    assert store.term_ids_on_dates(conn, [today]) == {store.find_term(conn, "学习")["id"]}
