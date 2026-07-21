@@ -158,6 +158,8 @@ class DashboardWindow:
         self.review_btn.pack(side="left", fill="x", expand=True)
         t.button(row, "Sync known", self._sync_known, kind="ghost", big=True,
                  padx=14).pack(side="left", padx=(8, 0))
+        t.button(row, "⚙", self._open_settings, kind="ghost", big=True,
+                 padx=12).pack(side="left", padx=(8, 0))
 
     def _build_footer(self):
         self.toast = tk.Label(self.body, text="", bg=t.BG, fg=t.MUTED,
@@ -226,6 +228,13 @@ class DashboardWindow:
 
     def _open_review(self):
         subprocess.Popen([sys.executable, "-m", "blipfeed.review"])
+
+    def _open_settings(self):
+        # in-process (Toplevel), so a Save mutates the config we hold and takes effect
+        # live — not a separate process editing a copy we wouldn't see
+        from .settings_window import open_toplevel
+        open_toplevel(self.root, self.c.cfg, on_saved=lambda _c: self._toast(
+            "Settings saved.", "good"))
 
     def _sync_known(self):
         r = self.c.sync_known()
