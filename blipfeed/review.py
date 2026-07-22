@@ -162,9 +162,10 @@ class ReviewController:
         if not row["meaning"]:
             raise ValueError("can't card a term with no meaning — enrich it first")
         contexts = {row["term"]: store.contexts_for(self.conn, term_id, 1)}
-        blip_link.export([row], deck_id=self.cfg.blip_deck_id,
+        deck_id = blip_link.roll_if_full(self.cfg)   # fresh deck if the active one's full
+        blip_link.export([row], deck_id=deck_id,
                          language=self.cfg.language, contexts_by_term=contexts)
-        store.mark_carded(self.conn, term_id, self.cfg.blip_deck_id, str(term_id))
+        store.mark_carded(self.conn, term_id, deck_id, str(term_id))
         self.conn.commit()
 
     def ignore(self, term_id):
@@ -193,9 +194,9 @@ class ReviewController:
         row = store.get_term(self.conn, term_id)
         if row is None:
             raise KeyError(term_id)
-        path = blip_link.deck_path(self.cfg.blip_deck_id)
-        deck = blip_link.load_deck(path, self.cfg.blip_deck_id,
-                                   language=self.cfg.language)
+        deck_id = row["card_deck"] or self.cfg.blip_deck_id   # the deck it landed in
+        path = blip_link.deck_path(deck_id)
+        deck = blip_link.load_deck(path, deck_id, language=self.cfg.language)
         if blip_link.remove_terms(deck, [row["term"]]):
             blip_link.write_deck(deck, path)
         store.uncard(self.conn, term_id)

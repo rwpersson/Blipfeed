@@ -162,6 +162,8 @@ class DashboardWindow:
         self.review_btn.pack(side="left", fill="x", expand=True)
         t.button(row, "Sync known", self._sync_known, kind="ghost", big=True,
                  padx=14).pack(side="left", padx=(8, 0))
+        t.button(row, "🗂", self._open_decks, kind="ghost", big=True,
+                 padx=12).pack(side="left", padx=(8, 0))
         t.button(row, "📊", self._open_stats, kind="ghost", big=True,
                  padx=12).pack(side="left", padx=(8, 0))
         t.button(row, "⚙", self._open_settings, kind="ghost", big=True,
@@ -251,6 +253,12 @@ class DashboardWindow:
         from .settings_window import open_toplevel
         open_toplevel(self.root, self.c.cfg, on_saved=lambda _c: self._toast(
             "Settings saved.", "good"))
+
+    def _open_decks(self):
+        # in-process too: graduating rolls `active_deck` in the config the capture loop
+        # holds, so it must mutate the same object, not a copy on disk
+        from .decks_window import open_toplevel
+        open_toplevel(self.root, self.c.cfg, on_change=self._refresh)
 
     def _sync_known(self):
         r = self.c.sync_known()

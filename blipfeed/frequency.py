@@ -33,7 +33,7 @@ the review queue becomes the only path. That's a legitimate way to run the app.
 """
 from dataclasses import dataclass
 
-from . import dictionary, hanzi, lang, segment, store
+from . import blip_link, dictionary, hanzi, lang, segment, store
 from .logging_setup import get
 
 log = get("frequency")
@@ -280,9 +280,13 @@ def promote(conn, cfg, deck_writer=None):
         return []
     if deck_writer is not None:
         deck_writer(chosen)
+    # The writer (blip_link.exporter) may have rolled to a fresh deck when the active
+    # one filled; read the id back so the card is recorded against the deck it landed
+    # in, not the pre-roll one.
+    deck_id = blip_link.active_deck_id(cfg)
     for row in chosen:
         try:
-            store.mark_carded(conn, row["id"], cfg.blip_deck_id, str(row["id"]))
+            store.mark_carded(conn, row["id"], deck_id, str(row["id"]))
         except store.AlreadyCarded:
             log.warning("term %s was already carded — skipping", row["term"])
         except ValueError:

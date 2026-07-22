@@ -287,8 +287,12 @@ chrome on the second tick of a static screen).
   still enrichable. `contexts_for` keeps returning the mined line as-is.
 - ☐ Word-difficulty / usefulness signal (HSK level, corpus rarity) to break
   frequency ties in promotion.
-- ☐ Roll the immersion deck by date (`immersion-<yyyy-mm-dd>`) so no single Blip deck
-  grows without bound.
+- ✓ **Deck lifecycle — cap, roll, graduate.** Auto-cap rolls the active deck to a
+  fresh `immersion-<date>` file at `max_deck_cards` (150) so no single Blip deck grows
+  without bound; graduating retires a learned batch from Blip's review via a shared
+  `archived` flag (`docs/DECK_ARCHIVE_CONTRACT.md`), keeping it in Blipfeed's Carded
+  list. Decks manager UI in `ui/decks_window.py`. **Blip's half is a separate task**
+  (skip archived decks in review + a manager toggle) — see the contract doc.
 - ☐ pkuseg as an alternative segmenter if jieba proves too coarse on real subs.
 - ☐ Stats: words seen vs carded vs known over time; per-session, per-source.
 

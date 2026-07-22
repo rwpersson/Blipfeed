@@ -95,7 +95,13 @@ DEFAULTS = {
                                         # past this mean Blip considers it learned
 
     # output
-    "blip_deck_id": "immersion",
+    "blip_deck_id": "immersion",        # base name of the deck family we write
+    "active_deck": None,                # the deck new cards go into right now; rolls
+                                        # to a fresh dated deck when full (None falls
+                                        # back to blip_deck_id). See blip_link.
+    "max_deck_cards": 150,              # auto-cap: at this many cards the active deck
+                                        # rolls over so no single Blip deck balloons.
+                                        # Graduating (archiving) a batch is separate.
 }
 
 # Bounds used by validate(); also what a settings UI would drive.
@@ -111,6 +117,7 @@ _RANGES = {
     "ocr_box_thresh": (0.1, 0.9),
     "ocr_text_score": (0.1, 0.9),
     "ocr_unclip_ratio": (1.0, 3.0),
+    "max_deck_cards": (10, 5000),
 }
 
 

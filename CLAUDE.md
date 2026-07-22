@@ -182,6 +182,19 @@ the only AI path, by explicit product decision.
 - **Blip loads decks at startup and does not hot-reload.** New cards appear on Blip's
   next launch, not live. Say so in any "carded!" message; don't imply an instant
   switch.
+- **Deck lifecycle — cap, roll, graduate (DONE).** Two operations, kept distinct:
+  - *Auto-cap (roll)*: the active deck splits into a fresh file at `max_deck_cards`
+    (150) so no single deck balloons. The full deck stays **active** (Blip keeps
+    reviewing it); rolling only prevents a giant file. `active_deck` (config) tracks
+    where new cards go; `blip_link.active_deck_id()` is pure so promote's export and
+    `mark_carded` agree on the id even across a roll.
+  - *Graduate (manual)*: retire a learned batch from Blip's review via a shared
+    **`archived` flag in the deck JSON** — the seam Blip reads/writes
+    (`docs/DECK_ARCHIVE_CONTRACT.md`). Graduated decks stay in Blipfeed's Carded list;
+    the store never loses them. The Decks manager (`ui/decks_window.py`, a Toplevel so
+    it mutates the live cfg) offers Graduate/Restore. **Blip must implement its half**
+    (skip archived decks in review; a manager toggle) — that's a separate task in the
+    Blip codebase, specified by the contract doc.
 - **Blip's user dir**: dev = the checkout, frozen = `%APPDATA%\Blip\`. Blipfeed must
   locate it the same way Blip's `paths.py` does (`%APPDATA%\Blip` if it exists, else
   ask / configure). Keep this in one module (`blipfeed/blip_link.py`) so the
@@ -378,9 +391,12 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
   bottom-third default + optional multiple regions beats assuming one fixed band.
 - **Region capture across DPI / multi-monitor** — same trap Blip documents. Capture
   in real pixels; a region picked at 125% scaling must map to real coordinates.
-- **The immersion deck can grow without bound.** Cap it / roll by date
-  (`immersion-<date>`) so Blip's deck list and audio-gen stay sane; Blip already
-  scrolls its deck list but don't hand it a 5,000-card single deck.
+- **The immersion deck can grow without bound — HANDLED (deck lifecycle, above).**
+  Auto-cap rolls the active deck to a fresh dated file at `max_deck_cards` (150), and
+  graduating (the `archived` flag) retires learned batches from Blip's review while
+  keeping them in Blipfeed's Carded list. So no single deck balloons, and total review
+  load is user-controlled — not by deleting anything (the store is the permanent
+  record), but by the active/archived split across deck files.
 
 ## Run / test (fill in as commands land)
 
