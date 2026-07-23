@@ -196,16 +196,45 @@ class DashboardWindow:
         if self.c.cfg.mode == "manual":
             self._capture_now()
             return
+        if self.c.running():
+            self.c.stop()
+            self._refresh()
+            return
+        self._start_with_region_check()
+
+    def _start_with_region_check(self):
+        """Starting AUTO **always** confirms the capture region first. Every time.
+
+        A wrong region is uniquely brutal: capture runs happily, mines nothing, and you
+        only discover it after the session. A region silently reset to a 100x40 box ate a
+        full hour of immersion. Confirming costs one keypress — the picker opens with the
+        current region drawn, Esc keeps it, a drag replaces it — and it makes a wrong
+        region impossible to not notice. Never make this conditional on "we already have
+        one": having one is exactly the case that failed.
+        """
+        if not self._confirm_region():
+            self._refresh()
+            return
         try:
-            self.c.toggle()
+            self.c.start()
         except NoRegion:
-            self._change_region()
-            if self.c.cfg.region() is not None:
-                try:
-                    self.c.start()
-                except NoRegion:
-                    pass
+            self._notify("Pick a capture region to start.", "danger")
         self._refresh()
+
+    def _confirm_region(self):
+        """Picker with the current region drawn: drag replaces it, Esc keeps it.
+        Returns False only when there is still no region at all."""
+        from .region import pick_region
+        current = self.c.cfg.region()
+        region = pick_region(master=self.root, current=current)
+        if region is not None:
+            self.c.set_region(region)
+            self._notify(f"Region set to {region.label()}.", "good")
+            return True
+        if current is None:
+            self._notify("No capture region — nothing would be mined.", "danger")
+            return False
+        return True
 
     def _capture_now(self):
         if not self._busy.acquire(blocking=False):
@@ -413,11 +442,14 @@ class DashboardWindow:
         self.tray_active = self.tray.start()
 
     def _tray_toggle(self):
-        try:
-            self.c.toggle()
-        except NoRegion:
-            pass
-        self._refresh()
+        # same rule from the tray as from the window: never start without confirming
+        # the region (this is the path used while gaming, so it matters most here)
+        if self.c.running():
+            self.c.stop()
+            self._refresh()
+        else:
+            self._show_window()          # the picker needs a visible owner
+            self._start_with_region_check()
 
     def _show_window(self):
         self.root.deiconify()

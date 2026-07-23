@@ -391,6 +391,24 @@ data/               bundled CC-CEDICT (+ optional HSK lists)
   bottom-third default + optional multiple regions beats assuming one fixed band.
 - **Region capture across DPI / multi-monitor** — same trap Blip documents. Capture
   in real pixels; a region picked at 125% scaling must map to real coordinates.
+- **NEVER let tests touch the user's real files. This cost a real hour of immersion.**
+  `Config.save()` falls back to `paths.config_file()` when the Config has no path, and
+  tests build path-less Configs — so one test calling `set_mode`/`set_auto_card`/
+  `set_region` rewrote the developer's **real** `config.json` with test values: the
+  `100x40` region from `tests/test_session.py` and `onboarded=False`. Capture then ran
+  happily against a 100x40 box and mined nothing for an hour. The same accident also
+  explained two other bugs chased separately (the welcome nagging every launch;
+  `active_deck` reverting to null) — **one cause, three symptoms**, so suspect it first
+  when user state "resets by itself". `tests/conftest.py` now redirects `paths.user_dir`
+  *and* `paths.blip_user_dir` per test (autouse); that fixture is load-bearing, and
+  `test_config.py` has a regression test proving a naive `save()` stays in the sandbox.
+- **AUTO capture must confirm the region every single time it starts — no exceptions.**
+  A wrong region is uniquely brutal: capture looks like it's working, mines nothing, and
+  you only find out after the session is gone. So `_start_with_region_check` opens the
+  picker on *every* start (window, hotkey, and tray), with the current region drawn —
+  Esc keeps it, a drag replaces it. **Do not "optimize" this into a conditional** like
+  "only ask when no region is set": having a region set is exactly the case that failed.
+  The picker also warns loudly when a region is suspiciously small (`_SUSPICIOUS_W/H`).
 - **The immersion deck can grow without bound — HANDLED (deck lifecycle, above).**
   Auto-cap rolls the active deck to a fresh dated file at `max_deck_cards` (150), and
   graduating (the `archived` flag) retires learned batches from Blip's review while

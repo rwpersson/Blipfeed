@@ -31,6 +31,8 @@ from ..logging_setup import get  # noqa: E402
 log = get("ui.region")
 
 _MIN_SIZE = 8          # ignore an accidental click (a 2px "drag" isn't a region)
+# Below this a region is almost certainly a mistake, not a choice — warn hard.
+_SUSPICIOUS_W, _SUSPICIOUS_H = 240, 120
 
 
 def _virtual_desktop():
@@ -65,6 +67,14 @@ class _Picker:
                 cx + current.width // 2, max(cy - 14, 10),
                 text=f"current: {current.label()}",
                 fill="#9aa4b2", font=("Segoe UI", 11))
+            # A tiny region mines nothing while looking like it works — say so loudly.
+            # This is what a region reset to 100x40 looked like, and it cost an hour.
+            if current.width < _SUSPICIOUS_W or current.height < _SUSPICIOUS_H:
+                self.canvas.create_text(
+                    max(cx + current.width // 2, 260), max(cy - 36, 30),
+                    text="⚠  this region is tiny — it would mine almost nothing. "
+                         "Drag a new one.",
+                    fill="#e05a4d", font=("Segoe UI Semibold", 13))
 
         hint = ("Drag to select the capture region   ·   saved automatically   ·   "
                 + ("Esc to keep the current one" if current is not None

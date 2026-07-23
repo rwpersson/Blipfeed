@@ -115,3 +115,21 @@ def test_validate_catches_bad_mode():
 def test_validate_rejects_bool_as_number():
     """True == 1 in Python; a bool in a numeric knob is a config error, not a 1."""
     assert any("min_count" in p for p in Config({"min_count": True}).validate())
+
+
+def test_pathless_save_cannot_reach_the_real_user_config():
+    """Regression guard for the worst bug this project has had.
+
+    `Config.save()` falls back to `paths.config_file()` when the Config has no path, and
+    tests build path-less Configs — so `set_mode`/`set_region`/`set_auto_card` in a test
+    rewrote the developer's REAL config.json with test values (a 100x40 region,
+    onboarded=False), silently destroying a live capture region and an hour of mining.
+    conftest now redirects `paths.user_dir` for every test; this proves a naive save()
+    lands in that sandbox and never in the checkout.
+    """
+    from blipfeed import paths
+
+    saved = Config().set("mode", "manual").save()
+    assert saved == paths.config_file()
+    assert saved.is_relative_to(paths.user_dir())     # inside the per-test sandbox
+    assert saved.parent.name == "userdir"             # ...which conftest created
