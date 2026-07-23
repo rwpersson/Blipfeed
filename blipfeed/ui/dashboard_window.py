@@ -34,7 +34,7 @@ class DashboardWindow:
         self._toast_job = None
         root.title("Blipfeed")
         root.configure(bg=t.BG)
-        root.minsize(440, 320)
+        root.minsize(540, 300)
         t.apply_icon(root)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -53,14 +53,14 @@ class DashboardWindow:
             scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(
             self._body_win, width=e.width))
-        self.canvas.bind("<Enter>", lambda _e: self.canvas.bind_all(
-            "<MouseWheel>", self._wheel))
-        self.canvas.bind("<Leave>", lambda _e: self.canvas.unbind_all("<MouseWheel>"))
+        # wheel from anywhere in the window — bind on the root (every descendant's
+        # bindtags include it), not a canvas <Enter>/<Leave> bind_all that dies the
+        # moment the pointer moves onto a child widget
+        root.bind("<MouseWheel>", self._wheel)
 
         self._build_header()
         self._build_primary()
-        self._build_toggles()
-        self._build_region()
+        self._build_mode_region()
         self._build_stats()
         self._build_hint()
         self._build_actions()
@@ -68,7 +68,7 @@ class DashboardWindow:
 
         root.update_idletasks()
         want_h = self.body.winfo_reqheight() + 4
-        root.geometry(f"470x{min(want_h, int(root.winfo_screenheight() * 0.92))}")
+        root.geometry(f"580x{min(want_h, int(root.winfo_screenheight() * 0.85))}")
 
         self._hinted_tray = False
         self._last_running = None
@@ -84,7 +84,7 @@ class DashboardWindow:
     # ------------------------------------------------------------- building
     def _build_header(self):
         head = tk.Frame(self.body, bg=t.BG)
-        head.pack(fill="x", padx=20, pady=(18, 8))
+        head.pack(fill="x", padx=20, pady=(14, 4))
         tk.Label(head, text="Blipfeed", bg=t.BG, fg=t.INK, font=t.FONT_TITLE).pack(
             side="left")
         self.dot = tk.Label(head, text="○ Idle", bg=t.BG, fg=t.MUTED, font=t.FONT_H)
@@ -92,15 +92,26 @@ class DashboardWindow:
 
     def _build_primary(self):
         wrap = tk.Frame(self.body, bg=t.BG)
-        wrap.pack(fill="x", padx=20, pady=(4, 10))
+        wrap.pack(fill="x", padx=20, pady=(2, 6))
         self.primary = t.button(wrap, "▶  Start", self._primary_click,
-                                kind="primary", big=True, pady=13)
+                                kind="primary", big=True, pady=11)
         self.primary.pack(fill="x")
 
-    def _build_toggles(self):
-        card = t.card(self.body, "Mode")
+    def _build_mode_region(self):
+        # side by side (uses the wider window) so the dashboard isn't so tall
+        wrap = tk.Frame(self.body, bg=t.BG)
+        wrap.pack(fill="x", padx=20, pady=6)
+        left = tk.Frame(wrap, bg=t.SURFACE)
+        left.pack(side="left", fill="both", expand=True)
+        right = tk.Frame(wrap, bg=t.SURFACE)
+        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        self._build_toggles(left)
+        self._build_region(right)
+
+    def _build_toggles(self, card):
+        t.section_label(card, "Mode").pack(anchor="w", padx=14, pady=(10, 0))
         row = tk.Frame(card, bg=t.SURFACE)
-        row.pack(fill="x", padx=14, pady=(4, 12))
+        row.pack(fill="x", padx=14, pady=(6, 12))
         self.mode_auto = self._seg(row, "Auto", lambda: self._set_mode("auto"))
         self.mode_manual = self._seg(row, "Manual", lambda: self._set_mode("manual"))
         self.mode_auto.pack(side="left")
@@ -116,12 +127,12 @@ class DashboardWindow:
 
     def _seg(self, master, text, cmd):
         return tk.Button(master, text=text, command=cmd, font=t.FONT, relief="flat",
-                         bd=0, padx=18, pady=6, cursor="hand2", activeforeground=t.INK)
+                         bd=0, padx=14, pady=6, cursor="hand2", activeforeground=t.INK)
 
-    def _build_region(self):
-        card = t.card(self.body, "Capture region")
+    def _build_region(self, card):
+        t.section_label(card, "Capture region").pack(anchor="w", padx=14, pady=(10, 0))
         row = tk.Frame(card, bg=t.SURFACE)
-        row.pack(fill="x", padx=14, pady=(4, 12))
+        row.pack(fill="x", padx=14, pady=(6, 12))
         self.region_lbl = tk.Label(row, text="—", bg=t.SURFACE, fg=t.INK, font=t.FONT,
                                    anchor="w")
         self.region_lbl.pack(side="left", fill="x", expand=True)
@@ -131,18 +142,22 @@ class DashboardWindow:
     def _build_stats(self):
         card = t.card(self.body, "")
         grid = tk.Frame(card, bg=t.SURFACE)
-        grid.pack(fill="x", padx=14, pady=12)
+        grid.pack(fill="x", padx=14, pady=(8, 10))
         self.stat = {}
-        rows = [("This session", ["snapshots", "words", "cards"]),
-                ("To review", ["needs a definition", "ready"]),
-                ("Library", ["known", "carded"])]
-        for r, (label, keys) in enumerate(rows):
+        num_font = ("Segoe UI Semibold", 16)
+        # "This session" spans the top; "To review" and "Library" share the next row so
+        # the block stays short and uses the width.
+        groups = [("This session", ["snapshots", "words", "cards"], 0, 0, 3),
+                  ("To review", ["needs a definition", "ready"], 2, 0, 2),
+                  ("Library", ["known", "carded"], 2, 3, 2)]
+        for label, keys, base_row, base_col, span in groups:
             t.section_label(grid, label, bg=t.SURFACE).grid(
-                row=r * 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-            for col, key in enumerate(keys):
+                row=base_row, column=base_col, columnspan=span, sticky="w", pady=(8, 0))
+            for i, key in enumerate(keys):
                 cell = tk.Frame(grid, bg=t.SURFACE)
-                cell.grid(row=r * 2 + 1, column=col, sticky="w", padx=(0, 24))
-                num = tk.Label(cell, text="0", bg=t.SURFACE, fg=t.INK, font=t.FONT_NUM)
+                cell.grid(row=base_row + 1, column=base_col + i, sticky="w",
+                          padx=(0, 18))
+                num = tk.Label(cell, text="0", bg=t.SURFACE, fg=t.INK, font=num_font)
                 num.pack(anchor="w")
                 tk.Label(cell, text=key, bg=t.SURFACE, fg=t.MUTED,
                          font=t.FONT_SMALL).pack(anchor="w")
@@ -156,7 +171,7 @@ class DashboardWindow:
 
     def _build_actions(self):
         row = tk.Frame(self.body, bg=t.BG)
-        row.pack(fill="x", padx=20, pady=(8, 4))
+        row.pack(fill="x", padx=20, pady=(6, 4))
         self.review_btn = t.button(row, "Review", self._open_review, kind="ghost",
                                    big=True)
         self.review_btn.pack(side="left", fill="x", expand=True)
@@ -172,9 +187,9 @@ class DashboardWindow:
     def _build_footer(self):
         self.toast = tk.Label(self.body, text="", bg=t.BG, fg=t.MUTED,
                               font=t.FONT_SMALL, wraplength=430)
-        self.toast.pack(pady=(8, 2))
+        self.toast.pack(pady=(6, 2))
         tk.Label(self.body, text="New cards appear in Blip on its next launch.",
-                 bg=t.BG, fg=t.FAINT, font=t.FONT_SMALL).pack(pady=(0, 12))
+                 bg=t.BG, fg=t.FAINT, font=t.FONT_SMALL).pack(pady=(0, 8))
 
     # --------------------------------------------------------------- actions
     def _primary_click(self):

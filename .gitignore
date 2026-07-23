@@ -38,5 +38,8 @@ Thumbs.db
 # Local user config (region, knobs) — machine-specific
 config.json
 
+# First-run onboarding sentinel — per-user local state
+.onboarded
+
 # Spike outputs (generated decks, never the real one)
 spikes/out/

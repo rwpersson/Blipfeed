@@ -59,6 +59,13 @@ def config_file() -> Path:
     return user_dir() / "config.json"
 
 
+def onboarded_marker() -> Path:
+    """A sentinel written once the welcome completes. Kept OUT of config.json on
+    purpose: config is rewritten by several code paths, and the welcome must never nag
+    twice even if a write drops the flag. Its mere existence means 'onboarded'."""
+    return user_dir() / ".onboarded"
+
+
 def log_dir() -> Path:
     return user_dir() / "logs"
 

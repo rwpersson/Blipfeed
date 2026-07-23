@@ -74,12 +74,18 @@ class DecksManager:
         self.list.bind("<Configure>", lambda _e: canvas.configure(
             scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all(
-            "<MouseWheel>", lambda ev: canvas.yview_scroll(
-                int(-ev.delta / 120), "units")))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        # Scroll from anywhere in the window. Bind on the container — every descendant's
+        # bindtags include its toplevel, so the wheel works over the deck rows too. The
+        # canvas <Enter>/<Leave> + bind_all pattern does NOT: moving onto a row fires the
+        # canvas <Leave> and unbinds the wheel, so it only worked over empty gaps (the
+        # same bug the review window hit).
+        self._canvas = canvas
+        container.bind("<MouseWheel>", self._on_wheel)
 
         self._render()
+
+    def _on_wheel(self, event):
+        self._canvas.yview_scroll(int(-event.delta / 120), "units")
 
     # --------------------------------------------------------------- rendering
     def _render(self):

@@ -22,7 +22,7 @@ if __package__ in (None, ""):                       # run-as-a-script guard
 
     __package__ = "blipfeed"
 
-from . import capture, config as config_mod, store  # noqa: E402
+from . import capture, config as config_mod, paths, store  # noqa: E402
 from .logging_setup import get  # noqa: E402
 
 log = get("main")
@@ -172,11 +172,21 @@ def main(argv=None):
             conn.close()
 
     # First launch: onboarding runs first, in its own process so the dashboard opens
-    # on a clean root afterwards (one Tk root per process).
-    if not cfg.get("onboarded"):
+    # on a clean root afterwards (one Tk root per process). "Already onboarded" is the
+    # sentinel file OR the config flag — the sentinel is authoritative because config
+    # gets rewritten by several paths and could drop the flag; the config flag is kept
+    # as a fallback and self-heals anyone who onboarded before the sentinel existed.
+    marker = paths.onboarded_marker()
+    if not (marker.exists() or cfg.get("onboarded")):
         import subprocess
         subprocess.run([sys.executable, "-m", "blipfeed.ui.firstrun_window"])
         cfg = config_mod.load()                   # pick up region/known/onboarded
+    elif not marker.exists():                     # onboarded before the sentinel — heal
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError:
+            log.exception("couldn't write the onboarded marker")
 
     # Default: the dashboard is home. AUTO capture runs headless behind it.
     from .dashboard import DashboardController

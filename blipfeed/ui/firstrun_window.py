@@ -19,7 +19,7 @@ if __package__ in (None, ""):                       # run-as-a-script guard
     __package__ = "blipfeed.ui"
 
 from . import theme as t  # noqa: E402
-from .. import config as config_mod  # noqa: E402
+from .. import config as config_mod, paths  # noqa: E402
 from ..logging_setup import get  # noqa: E402
 
 log = get("ui.firstrun")
@@ -150,6 +150,14 @@ class FirstRun:
 
     def _finish(self):
         self.cfg.set("onboarded", True).save()
+        # Also drop the sentinel — the authoritative 'already onboarded' signal, immune
+        # to any later config rewrite (see paths.onboarded_marker).
+        try:
+            marker = paths.onboarded_marker()
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError:
+            log.exception("couldn't write the onboarded marker")
         self.root.destroy()
 
 
