@@ -259,6 +259,35 @@ def test_latest_session_tab(conn):
     assert terms == {"中文", "电影"}                   # every status from the latest sitting
 
 
+def test_status_tabs_lead_with_content_not_chrome(conn):
+    """The Session/status tabs must not open on ambient chrome. A real word sorts
+    ahead of an ambient one and a single character, which drop to the secondary tail
+    (the window's collapsed 'filtered out' section) — but nothing is discarded."""
+    sid = store.start_session(conn, "s")
+    snaps = [store.add_snapshot(conn, sid, source="r") for _ in range(8)]
+
+    def obs(term, snap, **cf):
+        store.observe(conn, term=term, session_id=sid, snapshot_id=snap,
+                      create_fields=cf or None)
+
+    for i, sn in enumerate(snaps):
+        obs("抖音", sn, dict_ok=1, meaning="Douyin")     # ambient: in every snapshot
+        if i < 3:
+            obs("集", sn)                                 # single character
+    obs("修仙", snaps[0], dict_ok=1, meaning="cultivate immortality")  # content, 1 snap
+    conn.commit()
+
+    sess = ReviewController(conn, Config()).latest_session()
+    tier = {x.term: x.tier for x in sess}
+    assert tier["修仙"] == "primary"
+    assert tier["抖音"] == "secondary"                    # ambient -> collapsed tail
+    assert tier["集"] == "secondary"                      # single character
+    order = [x.term for x in sess]
+    assert order.index("修仙") < order.index("抖音")       # content leads
+    assert order.index("修仙") < order.index("集")
+    assert {"修仙", "抖音", "集"} <= set(order)             # nothing dropped
+
+
 def test_search_tab(conn):
     make_term(conn, "学习", meaning="to study")
     make_term(conn, "中文", meaning="Chinese")

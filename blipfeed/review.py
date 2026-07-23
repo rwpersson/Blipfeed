@@ -79,9 +79,23 @@ class ReviewController:
                 for c in frequency.review_queue(self.conn, self.cfg, which)]
 
     def _flat(self, rows):
-        """A plain (untiered) list — used by the status/session/manual/search tabs,
-        where there's no primary/secondary promotion split to make."""
-        return [Candidate(r, "primary") for r in rows]
+        """Classify plain rows the way the queue does, then order content-first.
+
+        The status/session/manual/search tabs came straight off `list_terms`' raw
+        `count DESC`, which leads with the most *ambient* words — on a Douyin session
+        the Session tab opened on 抖音/集/第/精选 with the actual vocabulary buried
+        below. Reusing `frequency.classify` marks ambient / single-character / low-conf
+        rows `secondary`, and the same `(tier, -count, term)` sort the queue uses sends
+        them to the window's collapsed "filtered out" tail — still there, one click
+        away, just not first. Nothing is dropped."""
+        stats = store.term_snapshot_stats_bulk(self.conn, [r["id"] for r in rows])
+        cands = []
+        for r in rows:
+            df, window = stats.get(r["id"], (0, 0))
+            tier, reasons = frequency.classify(r, self.cfg, df, window)
+            cands.append(Candidate(r, tier, reasons))
+        cands.sort(key=lambda c: (c.tier != "primary", -c.count, c.term))
+        return cands
 
     def _by_dates(self, cands, dates):
         """Keep only candidates observed on `dates` — the review-wide date filter,
