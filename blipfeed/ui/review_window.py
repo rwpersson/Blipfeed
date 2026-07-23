@@ -85,6 +85,10 @@ class _Row(ttk.Frame):
                       "ignored": _MUTED}.get(cand.status, _MUTED)
             ttk.Label(head_row, text=f"  ● {cand.status}", foreground=colour,
                       font=_SMALL).pack(side="left")
+        # active-deck flag (Carded tab): the batch new cards currently land in
+        if getattr(cand, "active", False):
+            ttk.Label(head_row, text="  ◆ active deck", foreground=_t.ACCENT,
+                      font=_SMALL).pack(side="left")
         if cand.manual:
             ttk.Label(head_row, text="  ⌨", foreground=_MUTED, font=_SMALL).pack(
                 side="left")

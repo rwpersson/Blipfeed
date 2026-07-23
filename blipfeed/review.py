@@ -47,12 +47,13 @@ class Candidate:
     the rows it actually draws (`contexts_for`).
     """
 
-    __slots__ = ("row", "tier", "reasons")
+    __slots__ = ("row", "tier", "reasons", "active")
 
-    def __init__(self, row, tier, reasons=()):
+    def __init__(self, row, tier, reasons=(), active=False):
         self.row = row
         self.tier = tier
         self.reasons = reasons
+        self.active = active            # in Blipfeed's active deck (Carded tab flag)
 
     # convenience passthroughs the window reads
     id = property(lambda self: self.row["id"])
@@ -118,8 +119,19 @@ class ReviewController:
         return self._by_dates(self._candidates("ready"), dates)
 
     def carded(self, dates=None):
-        """Already in the Blip deck — shown so UI stragglers can be pulled back out."""
-        return self._list(dates=dates, statuses=("carded",))
+        """Already in the Blip deck — shown so UI stragglers can be pulled back out.
+
+        Cards in Blipfeed's **active deck** (where new cards land right now) are flagged
+        and listed first, so the batch you're currently building stands apart from the
+        rolled/graduated decks below it. All carded, so no tier split — just active
+        first, then most-seen."""
+        active = blip_link.active_deck_id(self.cfg)
+        rows = store.list_terms(self.conn, language=self.cfg.language, dates=dates,
+                                statuses=("carded",))
+        cands = [Candidate(r, "primary", active=(r["card_deck"] == active))
+                 for r in rows]
+        cands.sort(key=lambda c: (not c.active, -c.count, c.term))
+        return cands
 
     def ignored(self, dates=None):
         """Words you set aside — with the option to bring any back."""

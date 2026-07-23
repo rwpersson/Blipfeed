@@ -243,6 +243,24 @@ def test_card_from_ignored(conn, tmp_path, monkeypatch):
     assert store.get_term(conn, tid)["status"] == "carded"
 
 
+def test_carded_tab_flags_and_leads_with_active_deck(conn):
+    """Carded cards in Blipfeed's active deck are flagged and sorted ahead of cards in
+    rolled/graduated decks — even ones seen more often."""
+    a = make_term(conn, "修仙", meaning="cultivate immortality")
+    b = make_term(conn, "灵石", meaning="spirit stone")
+    for _ in range(5):
+        store.observe(conn, term="灵石")            # the non-active card is seen MORE
+    store.mark_carded(conn, a, "immersion", str(a))              # the active deck
+    store.mark_carded(conn, b, "immersion-2026-01-01", str(b))   # a rolled/old deck
+    conn.commit()
+
+    cards = ReviewController(conn, Config()).carded()            # active_deck -> immersion
+    by = {c.term: c for c in cards}
+    assert by["修仙"].active is True
+    assert by["灵石"].active is False
+    assert cards[0].term == "修仙"                  # active leads despite lower count
+
+
 def test_manual_tab(conn):
     make_term(conn, "万魂幡", manual=True)
     make_term(conn, "学习")                           # auto
