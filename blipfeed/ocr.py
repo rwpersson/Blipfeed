@@ -12,6 +12,7 @@ chrome, and manual mode needs positions to draw clickable chips.
 Engine init is heavy (~1.8s) — the provider loads it **lazily and once**, never per
 snapshot.
 """
+import threading
 from dataclasses import dataclass
 
 from .logging_setup import get
@@ -74,6 +75,12 @@ class RapidOcrProvider(OcrProvider):
     def __init__(self):
         self._engine = None
         self._params = {}
+        # Providers are module-level singletons (see _PROVIDERS), and a hotkey-triggered
+        # manual capture on the main thread can now run while the AUTO loop ticks on the
+        # capture thread — so two threads reach this one engine. RapidOCR wraps stateful
+        # det/cls/rec models, so serialize inference rather than assume it's reentrant.
+        # The lock also makes the lazy load happen exactly once.
+        self._lock = threading.Lock()
 
     def available(self):
         try:
@@ -93,9 +100,11 @@ class RapidOcrProvider(OcrProvider):
         full-screen grab, stylized fonts). Safe here because ingestion is lossless and
         promotion has its own confidence gate — recording more never over-cards.
         """
-        self._params = {k: v for k, v in params.items() if v is not None}
+        with self._lock:
+            self._params = {k: v for k, v in params.items() if v is not None}
 
     def _ensure(self):
+        """Load the engine. Caller must hold `_lock`."""
         if self._engine is None:
             from rapidocr_onnxruntime import RapidOCR
             log.info("loading RapidOCR (one-time, ~2s)")
@@ -103,8 +112,11 @@ class RapidOcrProvider(OcrProvider):
         return self._engine
 
     def recognize(self, image):
-        engine = self._ensure()
-        result, _elapse = engine(image, **self._params)
+        # Inference under the lock; the cheap result-shaping below runs outside it so a
+        # concurrent capture waits only for the actual OCR (~1s), not the parsing.
+        with self._lock:
+            engine = self._ensure()
+            result, _elapse = engine(image, **self._params)
         if not result:
             return []
         lines = []

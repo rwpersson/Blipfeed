@@ -15,9 +15,14 @@ dashboard reads stats on its own connection. That's safe because the store is WA
 cross-thread connection sharing is needed.
 
 MANUAL mode has no loop: a capture is a one-shot grab → pick → record, on the main
-thread. Mode is exclusive, and changing it or stopping tears the session down, so the
-auto worker's capturer and a manual capturer are never used from two threads at once
-(mss is per-thread).
+thread.
+
+**A manual capture may happen while AUTO is running** (the capture-now hotkey — grabbing
+a word you just saw is exactly what it's for, so demanding you stop mining first defeats
+it). The two sessions coexist because nothing mutable is shared: each owns its `Capturer`
+(mss is per-thread, and each instance is lazily created on the thread that uses it), its
+own WAL connection, and its own furniture state; only the auto loop promotes. The one
+real shared resource is the OCR engine singleton, which serializes inference internally.
 """
 import threading
 
@@ -54,7 +59,8 @@ class DashboardController:
         region = self.cfg.region()
         if region is None:
             raise NoRegion("pick a capture region first")
-        self._close_manual()
+        # the warm manual session is deliberately kept: capture-now must stay instant
+        # while AUTO runs (an explicit mode/region change still tears it down)
         self.last_error = None
         self._stop = threading.Event()
         self._session = self._make_session(self.cfg, region)
@@ -92,7 +98,15 @@ class DashboardController:
         """One-shot manual grab → pick → record. `pick_fn(img, lines)` shows the chip
         picker (main thread) and returns {tokens, context} or None. Returns the tokens
         recorded (possibly []). Keeps a warm session between captures so OCR isn't
-        re-initialised each time."""
+        re-initialised each time.
+
+        **Works while AUTO capture is running** — grabbing a word you just saw is the
+        whole point of the capture-now hotkey, and needing to stop mining first defeats
+        it. The two coexist safely: separate `Capturer`s (mss is per-thread, and each is
+        first used on its own thread), separate WAL connections, per-session furniture
+        state, and only the auto loop promotes. The one genuinely shared thing is the
+        OCR engine singleton, which serializes inference under its own lock.
+        """
         sess = self._ensure_manual_session()
         if sess is None:
             return []
@@ -104,8 +118,6 @@ class DashboardController:
         return picked["tokens"]
 
     def _ensure_manual_session(self):
-        if self.running():
-            raise RuntimeError("stop auto capture before a manual capture")
         if self._manual_session is None:
             region = self.cfg.region()
             if region is None:

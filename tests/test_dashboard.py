@@ -156,12 +156,33 @@ def test_manual_capture_reuses_the_warm_session(conn):
     assert len(c._made) == 1                           # OCR not re-initialised
 
 
-def test_manual_capture_refused_while_auto_running(conn):
+def test_manual_capture_works_while_auto_running(conn):
+    """The capture-now hotkey must work mid-session — grabbing a word you just saw is
+    the whole point of it, so it must not require stopping the mining first."""
     c = ctrl(conn)
     c.start()
-    with pytest.raises(RuntimeError):
-        c.capture_manual(lambda i, l: None)
-    c.stop()
+    try:
+        tokens = c.capture_manual(lambda i, l: {"tokens": ["万魂幡"],
+                                                "context": "师父该入万魂幡了"})
+        assert tokens == ["万魂幡"]
+        assert c._manual_session.recorded == (["万魂幡"], "师父该入万魂幡了")
+        assert c.running()                       # auto kept mining throughout
+        # the two sessions are separate objects — separate capturer/conn/furniture state
+        assert c._manual_session is not c._session
+    finally:
+        c.stop()
+
+
+def test_starting_auto_keeps_the_warm_manual_session(conn):
+    """Capture-now stays instant across a start: the warm session is not torn down."""
+    c = ctrl(conn, mode="manual")
+    c.capture_manual(lambda i, l: {"tokens": ["学习"]})
+    warm = c._manual_session
+    c.start()
+    try:
+        assert c._manual_session is warm         # survived
+    finally:
+        c.stop()
 
 
 # ----------------------------------- stats -----------------------------------

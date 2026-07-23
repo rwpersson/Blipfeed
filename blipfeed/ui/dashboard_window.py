@@ -217,14 +217,14 @@ class DashboardWindow:
             tokens = self.c.capture_manual(
                 lambda img, lines: pick_tokens(img, lines, master=self.root))
             if tokens:
-                self._toast(f"Recorded {len(tokens)}: " + " ".join(tokens[:6]), "good")
+                self._notify(f"Recorded {len(tokens)}: " + " ".join(tokens[:6]), "good")
             else:
-                self._toast("Nothing recorded.")
+                self._notify("Nothing recorded.")
         except NoRegion:
             self._change_region()
         except Exception as exc:
             log.exception("manual capture failed")
-            self._toast(str(exc), "danger")
+            self._notify(str(exc), "danger")
         finally:
             self._busy.release()
             self._refresh()
@@ -282,6 +282,19 @@ class DashboardWindow:
         self._refresh()
 
     # --------------------------------------------------------------- feedback
+    def _notify(self, text, kind="info"):
+        """Report a hotkey-triggered outcome. Toasts in the window, and *also* through
+        the tray when the window is hidden — in AUTO mode it usually is, which is exactly
+        how "capture-now silently does nothing" stayed invisible. This is a response to
+        something the user pressed, so it isn't the unsolicited interruption AUTO mode
+        is meant to avoid (CLAUDE.md Decisions #6)."""
+        self._toast(text, kind)
+        try:
+            if getattr(self, "tray_active", False) and self.root.state() != "normal":
+                self.tray.notify(text)
+        except Exception:
+            log.exception("tray notification")
+
     def _toast(self, text, kind="info"):
         colour = {"good": t.GOOD, "danger": t.DANGER, "info": t.MUTED,
                   t.ACCENT: t.ACCENT}.get(kind, t.MUTED)
