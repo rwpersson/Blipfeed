@@ -34,7 +34,7 @@ class DashboardWindow:
         self._toast_job = None
         root.title("Blipfeed")
         root.configure(bg=t.BG)
-        root.minsize(540, 300)
+        root.minsize(600, 320)
         t.apply_icon(root)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -68,7 +68,7 @@ class DashboardWindow:
 
         root.update_idletasks()
         want_h = self.body.winfo_reqheight() + 4
-        root.geometry(f"580x{min(want_h, int(root.winfo_screenheight() * 0.85))}")
+        root.geometry(f"640x{min(want_h, int(root.winfo_screenheight() * 0.85))}")
 
         self._hinted_tray = False
         self._last_running = None
@@ -170,19 +170,19 @@ class DashboardWindow:
         self.hint.pack(fill="x", padx=22, pady=(2, 2))
 
     def _build_actions(self):
+        # Review is the primary follow-up, full width; the utilities sit in their own
+        # evenly-spread, labelled row below (icons alone read as cramped/awkward).
+        self.review_btn = t.button(self.body, "Review", self._open_review,
+                                   kind="ghost", big=True)
+        self.review_btn.pack(fill="x", padx=20, pady=(8, 6))
         row = tk.Frame(self.body, bg=t.BG)
-        row.pack(fill="x", padx=20, pady=(6, 4))
-        self.review_btn = t.button(row, "Review", self._open_review, kind="ghost",
-                                   big=True)
-        self.review_btn.pack(side="left", fill="x", expand=True)
-        t.button(row, "Sync known", self._sync_known, kind="ghost", big=True,
-                 padx=14).pack(side="left", padx=(8, 0))
-        t.button(row, "🗂", self._open_decks, kind="ghost", big=True,
-                 padx=12).pack(side="left", padx=(8, 0))
-        t.button(row, "📊", self._open_stats, kind="ghost", big=True,
-                 padx=12).pack(side="left", padx=(8, 0))
-        t.button(row, "⚙", self._open_settings, kind="ghost", big=True,
-                 padx=12).pack(side="left", padx=(8, 0))
+        row.pack(fill="x", padx=20, pady=(0, 6))
+        for text, cmd in (("Sync known", self._sync_known),
+                          ("🗂  Decks", self._open_decks),
+                          ("📊  Stats", self._open_stats),
+                          ("⚙  Settings", self._open_settings)):
+            t.button(row, text, cmd, kind="ghost").pack(
+                side="left", fill="x", expand=True, padx=3)
 
     def _build_footer(self):
         self.toast = tk.Label(self.body, text="", bg=t.BG, fg=t.MUTED,
