@@ -243,22 +243,29 @@ def test_card_from_ignored(conn, tmp_path, monkeypatch):
     assert store.get_term(conn, tid)["status"] == "carded"
 
 
-def test_carded_tab_flags_and_leads_with_active_deck(conn):
-    """Carded cards in Blipfeed's active deck are flagged and sorted ahead of cards in
-    rolled/graduated decks — even ones seen more often."""
+def test_carded_tab_flags_and_leads_with_live_decks(conn, tmp_path, monkeypatch):
+    """Carded cards in a LIVE (non-graduated) deck are flagged and sorted ahead of cards
+    in graduated decks — even ones seen more often."""
+    from blipfeed import blip_link
+    monkeypatch.setattr(blip_link, "deck_dir", lambda: tmp_path)
+    blip_link.write_deck({"name": "live", "words": []},
+                         blip_link.deck_path("immersion-2026-07-22"))     # live in Blip
+    blip_link.write_deck({"name": "grad", "words": [], "archived": True},
+                         blip_link.deck_path("immersion"))                # graduated
+
     a = make_term(conn, "修仙", meaning="cultivate immortality")
     b = make_term(conn, "灵石", meaning="spirit stone")
     for _ in range(5):
-        store.observe(conn, term="灵石")            # the non-active card is seen MORE
-    store.mark_carded(conn, a, "immersion", str(a))              # the active deck
-    store.mark_carded(conn, b, "immersion-2026-01-01", str(b))   # a rolled/old deck
+        store.observe(conn, term="灵石")            # the graduated card is seen MORE
+    store.mark_carded(conn, a, "immersion-2026-07-22", str(a))   # a live deck
+    store.mark_carded(conn, b, "immersion", str(b))              # the graduated deck
     conn.commit()
 
-    cards = ReviewController(conn, Config()).carded()            # active_deck -> immersion
+    cards = ReviewController(conn, Config()).carded()
     by = {c.term: c for c in cards}
-    assert by["修仙"].active is True
-    assert by["灵石"].active is False
-    assert cards[0].term == "修仙"                  # active leads despite lower count
+    assert by["修仙"].active is True                # in a live deck
+    assert by["灵石"].active is False               # in a graduated deck
+    assert cards[0].term == "修仙"                  # live leads despite lower count
 
 
 def test_manual_tab(conn):

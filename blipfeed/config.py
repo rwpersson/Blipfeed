@@ -95,10 +95,11 @@ DEFAULTS = {
                                         # past this mean Blip considers it learned
 
     # output
-    "blip_deck_id": "immersion",        # base name of the deck family we write
-    "active_deck": None,                # the deck new cards go into right now; rolls
-                                        # to a fresh dated deck when full (None falls
-                                        # back to blip_deck_id). See blip_link.
+    "blip_deck_id": "immersion",        # base name of the deck family we write. Which
+                                        # deck within it is "active" is derived from the
+                                        # deck files (blip_link.active_deck_id), never
+                                        # cached here — separate processes would clobber
+                                        # a cached value.
     "max_deck_cards": 150,              # auto-cap: at this many cards the active deck
                                         # rolls over so no single Blip deck balloons.
                                         # Graduating (archiving) a batch is separate.

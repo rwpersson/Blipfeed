@@ -215,11 +215,15 @@ def write_deck(deck, path):
     return path
 
 
-def export(rows, *, deck_id="immersion", name="Immersion", language="zh-CN",
+def export(rows, *, deck_id="immersion", name=None, language="zh-CN",
            contexts_by_term=None, path=None):
-    """Write rows into the Blip deck. Returns (path, words_added)."""
+    """Write rows into the Blip deck. Returns (path, words_added).
+
+    `name` defaults to a distinct label derived from the deck id, so rolled decks read
+    as 'Immersion · 2026-07-22' rather than three identical 'Immersion's in Blip.
+    """
     path = path or deck_path(deck_id)
-    deck = load_deck(path, deck_id, name, language)
+    deck = load_deck(path, deck_id, name or _default_name(deck_id), language)
     added = add_cards(deck, rows, contexts_by_term)
     if added:
         write_deck(deck, path)
@@ -228,18 +232,15 @@ def export(rows, *, deck_id="immersion", name="Immersion", language="zh-CN",
 
 
 def exporter(conn, cfg, path=None):
-    """A `deck_writer` for `frequency.promote()` that attaches mined sentences.
-
-    Writes into the *active* deck, rolling to a fresh one first if it's full — so the
-    id `frequency.promote()` then records with `mark_carded` (via `active_deck_id`)
-    matches the deck actually written. An explicit `path` (tests) skips the roll.
-    """
+    """A `deck_writer` for `frequency.promote()` that attaches mined sentences and
+    writes into the active deck. An explicit `path` (tests) writes there under the base
+    id instead of resolving from the deck dir."""
     from . import store
 
     def write(rows):
         contexts = {r["term"]: store.contexts_for(conn, r["id"], limit=1)
                     for r in rows}
-        deck_id = active_deck_id(cfg) if path else roll_if_full(cfg)
+        deck_id = cfg.blip_deck_id if path else active_deck_id(cfg)
         export(rows, deck_id=deck_id, language=cfg.language,
                contexts_by_term=contexts, path=path)
     return write
@@ -248,22 +249,46 @@ def exporter(conn, cfg, path=None):
 # --------------------------- deck lifecycle: cap, roll, graduate --------------
 # Two distinct operations, easy to conflate:
 #   • ROLL (auto-cap)  — the active deck hit max_deck_cards, so new cards start a fresh
-#     deck. The full deck stays *active* (Blip keeps reviewing it). Purely to stop any
-#     one file from ballooning.
+#     deck. The full deck stays *live* (Blip keeps reviewing it). Purely to stop any one
+#     file from ballooning. There is no separate "roll" call: `active_deck_id` simply
+#     stops returning a full deck and hands back a fresh id.
 #   • GRADUATE (manual) — you've learned a batch, so retire it from Blip's review by
-#     setting the shared `archived` flag. It stays in Blipfeed's carded list. If the
-#     graduated deck was the active one, new cards roll to a fresh deck too.
-# The `archived` flag is the seam Blip reads/writes — see docs/DECK_ARCHIVE_CONTRACT.md.
+#     setting the shared `archived` flag. It stays in Blipfeed's carded list.
+#
+# **Which deck is "active" is derived from the deck FILES, never cached in config.**
+# An earlier version tracked it in config.active_deck, but Blipfeed runs several
+# processes (the review window is its own process) each with their own Config, and their
+# saves clobbered that value back to null — so `active_deck_id` fell through to the base
+# id even after it had been graduated, and new cards were about to be written into an
+# archived deck. The deck files are the one shared, authoritative source (same as the
+# `archived` flag), so both apps and all our processes agree by construction.
 
 def deck_card_count(path):
     deck = _read_deck(path)
     return len(deck["words"]) if deck else 0
 
 
+def _owned(deck_id, base):
+    """A deck Blipfeed authored — the base id or a dated roll of it. Guards us from
+    ever archiving a deck the user hand-made in Blip."""
+    return deck_id == base or deck_id.startswith(base + "-")
+
+
+def _default_name(deck_id):
+    """A distinct, readable deck name from the id: 'immersion' -> 'Immersion',
+    'immersion-2026-07-22-2' -> 'Immersion · 2026-07-22-2'."""
+    base, _, suffix = deck_id.partition("-")
+    label = base.capitalize()
+    return f"{label} · {suffix}" if suffix else label
+
+
 def _fresh_deck_id(base):
-    """A new, unused deck id in the `base` family, dated for a human-readable name."""
+    """A new, unused deck id in the `base` family — the base itself if free, else dated
+    (with a numeric suffix if that date is already taken)."""
     from datetime import date
 
+    if not deck_path(base).exists():
+        return base
     stem = f"{base}-{date.today().isoformat()}"
     if not deck_path(stem).exists():
         return stem
@@ -274,24 +299,41 @@ def _fresh_deck_id(base):
 
 
 def active_deck_id(cfg):
-    """The deck new cards are written to. **Pure** (no file IO, no roll) so it's safe
-    to call more than once in a single promote and always agree with itself."""
-    return cfg.get("active_deck") or cfg.blip_deck_id
+    """The deck new cards are written to: the most-recently-written non-archived deck in
+    the immersion family that still has room, or a fresh id if there is none.
 
-
-def roll_if_full(cfg):
-    """Return the deck to write to now, starting a fresh one first if the active deck
-    is at/over the cap. Records the new active deck in config so a later
-    `active_deck_id()` (e.g. `mark_carded`) sees the same id. The rolled-off deck is
-    left active — auto-cap only splits files; retiring is `graduate()`."""
-    active = active_deck_id(cfg)
+    **Derived from the deck files**, so it is correct across Blipfeed's separate
+    processes and can never resolve to a graduated (archived) deck — the two failure
+    modes of the old config-cached version. Deterministic given the files, so calling it
+    for the export and again for `mark_carded` in one promote agrees with itself.
+    """
+    base = cfg.blip_deck_id
     cap = cfg.get("max_deck_cards", 150)
-    if cap and deck_card_count(deck_path(active)) >= cap:
-        active = _fresh_deck_id(cfg.blip_deck_id)
-        cfg.set("active_deck", active)
-        cfg.save()
-        log.info("deck full (cap %d) — new cards now roll into %s", cap, active)
-    return active
+    live = []
+    for p in deck_files():
+        if not _owned(p.stem, base):
+            continue
+        deck = _read_deck(p)
+        if deck is None or deck.get("archived"):
+            continue
+        if cap and len(deck["words"]) >= cap:
+            continue                       # full — a fresh deck takes new cards
+        live.append((p.stat().st_mtime, p.stem))
+    if live:
+        return max(live)[1]                # keep filling the most-recent live deck
+    return _fresh_deck_id(base)
+
+
+def live_deck_ids():
+    """Ids of decks that exist and are NOT archived — the decks Blip is actively
+    reviewing. A carded term whose `card_deck` is one of these is live in Blip right
+    now, as opposed to sitting in a graduated deck."""
+    out = set()
+    for p in deck_files():
+        deck = _read_deck(p)
+        if deck is not None and not deck.get("archived"):
+            out.add(p.stem)
+    return out
 
 
 def _set_archived(deck_id, value):
@@ -306,17 +348,14 @@ def _set_archived(deck_id, value):
     return True
 
 
-def graduate(cfg, deck_id):
-    """Retire a deck from Blip's review (set `archived`), keeping it in the carded
-    list. If it was the active deck, new cards roll to a fresh one."""
-    ok = _set_archived(deck_id, True)
-    if ok and active_deck_id(cfg) == deck_id:
-        cfg.set("active_deck", _fresh_deck_id(cfg.blip_deck_id))
-        cfg.save()
-    return ok
+def graduate(deck_id):
+    """Retire a deck from Blip's review by setting the shared `archived` flag; it stays
+    in Blipfeed's carded list. New cards go to the next live deck automatically —
+    `active_deck_id` re-derives from the files and skips archived decks."""
+    return _set_archived(deck_id, True)
 
 
-def restore(cfg, deck_id):
+def restore(deck_id):
     """Un-archive a deck — put it back into Blip's active review."""
     return _set_archived(deck_id, False)
 
@@ -326,15 +365,10 @@ def archived_deck_ids():
     return {p.stem for p in deck_files() if (_read_deck(p) or {}).get("archived")}
 
 
-def _owned(deck_id, base):
-    """A deck Blipfeed authored — the base id or a dated roll of it. Guards us from
-    ever archiving a deck the user hand-made in Blip."""
-    return deck_id == base or deck_id.startswith(base + "-")
-
-
 def list_decks(cfg):
-    """The immersion deck family, for the deck manager: id, name, card count, and
-    whether each is archived / the active one. Sorted active first, then by id."""
+    """The immersion deck family, for the deck manager: id, a distinct display name,
+    card count, and whether each is archived / the live write-target. Sorted active
+    first, then live, then archived."""
     base = cfg.blip_deck_id
     active = active_deck_id(cfg)
     out = []
@@ -344,8 +378,9 @@ def list_decks(cfg):
         deck = _read_deck(path)
         if deck is None:
             continue
-        out.append({"id": path.stem, "name": deck.get("name", path.stem),
-                    "count": len(deck["words"]), "archived": bool(deck.get("archived")),
-                    "active": path.stem == active})
+        archived = bool(deck.get("archived"))
+        out.append({"id": path.stem, "name": _default_name(path.stem),
+                    "count": len(deck["words"]), "archived": archived,
+                    "active": path.stem == active and not archived})
     out.sort(key=lambda d: (d["archived"], not d["active"], d["id"]))
     return out

@@ -1,9 +1,9 @@
 """The deck manager — graduate a finished batch, or bring one back.
 
-Opens as a Toplevel of the dashboard (one root per process) **on purpose**: graduating
-mutates `active_deck` in the config the running capture loop holds, so it must be the
-same object — a subprocess editing the file on disk would leave the loop carding into a
-deck it just retired.
+Opens as a Toplevel of the dashboard so it can refresh the dashboard when a deck's state
+changes. Graduating just flips the shared `archived` flag in the deck file; where new
+cards go is re-derived from the deck files on the next promote (`blip_link.active_deck_id`),
+so the running capture loop follows along without any shared in-memory state.
 
 Two operations, mirrored by Blip through the shared `archived` flag
 (docs/DECK_ARCHIVE_CONTRACT.md):
@@ -109,8 +109,10 @@ class DecksManager:
             meta += "  ·  active — new cards land here"
         elif d["archived"]:
             meta += "  ·  archived — hidden from Blip's review"
+        else:
+            meta += "  ·  in Blip's review"
         tk.Label(left, text=meta, bg=t.SURFACE,
-                 fg=t.GOOD if d["active"] else t.MUTED,
+                 fg=t.GOOD if d["active"] else (t.MUTED if d["archived"] else t.INK),
                  font=t.FONT_SMALL, anchor="w").pack(anchor="w")
 
         if d["archived"]:
@@ -123,7 +125,7 @@ class DecksManager:
     # --------------------------------------------------------------- actions
     def _graduate(self, deck_id):
         try:
-            if blip_link.graduate(self.cfg, deck_id):
+            if blip_link.graduate(deck_id):
                 self._done(f"Graduated “{deck_id}”. It stays in your Carded list; "
                            "Blip drops it from review on its next launch.")
             else:
@@ -134,7 +136,7 @@ class DecksManager:
 
     def _restore(self, deck_id):
         try:
-            if blip_link.restore(self.cfg, deck_id):
+            if blip_link.restore(deck_id):
                 self._done(f"Restored “{deck_id}” — back in Blip's review next launch.")
             else:
                 self._done(f"Couldn't find deck “{deck_id}”.", ok=False)

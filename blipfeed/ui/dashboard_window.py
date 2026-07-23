@@ -255,8 +255,8 @@ class DashboardWindow:
             "Settings saved.", "good"))
 
     def _open_decks(self):
-        # in-process too: graduating rolls `active_deck` in the config the capture loop
-        # holds, so it must mutate the same object, not a copy on disk
+        # in-process so graduating/restoring can refresh the dashboard; the active-deck
+        # choice itself is derived from the deck files, not shared cfg state
         from .decks_window import open_toplevel
         open_toplevel(self.root, self.c.cfg, on_change=self._refresh)
 

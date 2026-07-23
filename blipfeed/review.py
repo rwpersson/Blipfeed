@@ -121,14 +121,15 @@ class ReviewController:
     def carded(self, dates=None):
         """Already in the Blip deck — shown so UI stragglers can be pulled back out.
 
-        Cards in Blipfeed's **active deck** (where new cards land right now) are flagged
-        and listed first, so the batch you're currently building stands apart from the
-        rolled/graduated decks below it. All carded, so no tier split — just active
-        first, then most-seen."""
-        active = blip_link.active_deck_id(self.cfg)
+        Cards in a **live deck** (one Blip is still reviewing — i.e. not graduated) are
+        flagged and listed first, so the batches you're actively studying stand apart
+        from the graduated ones below. 'Live' is every non-archived deck, not just the
+        single write-target, so all decks currently in Blip qualify. All carded, so no
+        tier split — just live first, then most-seen."""
+        live = blip_link.live_deck_ids()
         rows = store.list_terms(self.conn, language=self.cfg.language, dates=dates,
                                 statuses=("carded",))
-        cands = [Candidate(r, "primary", active=(r["card_deck"] == active))
+        cands = [Candidate(r, "primary", active=(r["card_deck"] in live))
                  for r in rows]
         cands.sort(key=lambda c: (not c.active, -c.count, c.term))
         return cands
@@ -188,7 +189,7 @@ class ReviewController:
         if not row["meaning"]:
             raise ValueError("can't card a term with no meaning — enrich it first")
         contexts = {row["term"]: store.contexts_for(self.conn, term_id, 1)}
-        deck_id = blip_link.roll_if_full(self.cfg)   # fresh deck if the active one's full
+        deck_id = blip_link.active_deck_id(self.cfg)  # live, non-full deck (or a fresh one)
         blip_link.export([row], deck_id=deck_id,
                          language=self.cfg.language, contexts_by_term=contexts)
         store.mark_carded(self.conn, term_id, deck_id, str(term_id))
